@@ -17,20 +17,22 @@
  */
 
 use std::{env, fmt, thread};
+use std::cmp::min;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
+use std::ops::Deref;
 use std::path::Path;
 use std::process::exit;
-use std::sync::{Arc, Mutex};
-use std::sync::mpsc::{Receiver, sync_channel, SyncSender};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-type AnyResult<T> = Result<T, AnyError>;
-
 // =================================================================================================
+
+type AnyResult<T> = Result<T, AnyError>;
 
 #[derive(Debug, Clone)]
 struct AnyError(String);
@@ -54,7 +56,15 @@ impl<E: Error> From<E> for AnyError {
 }
 
 // =================================================================================================
+//region Secondary Context
 
+// -------------------------------------------------------------------------------------------------
+//region Direct Bit Encoding
+
+// -----------------------------------------------
+// region BitPrediction
+
+// MULTIPLIER[i] == 0x1_0000_0000 / (i + 2)
 const MULTIPLIER: [u32; 256] = [
 	0x80000000, 0x55555555, 0x40000000, 0x33333333, 0x2AAAAAAA, 0x24924924, 0x20000000, 0x1C71C71C,
 	0x19999999, 0x1745D174, 0x15555555, 0x13B13B13, 0x12492492, 0x11111111, 0x10000000, 0x0F0F0F0F,
@@ -90,20 +100,16 @@ const MULTIPLIER: [u32; 256] = [
 	0x010624DD, 0x0105197F, 0x01041041, 0x0103091B, 0x01020408, 0x01010101, 0x01000000, 0x00FF00FF,
 ];
 
+// lower 8-bit is a counter, higher 24-bit is prediction
 #[derive(Clone)]
 struct BitPrediction {
-	state: u32, // lower 8-bit is a counter, higher 24-bit is prediction
+	state: u32,
 }
 
 impl BitPrediction {
-	fn new() -> Self {
-		Self {
-			state: 0x80000000
-		}
-	}
+	fn new() -> Self { Self { state: 0x80000000 } }
 
-	fn get_prediction(&self) -> u64 { (self.state >> 8) as u64 }
-
+	// return current prediction and then update the prediction with new bit
 	fn update(&mut self, bit: usize) -> u64 {
 		assert!(bit == 0 || bit == 1);
 		// get bit 0-7 as count
@@ -124,26 +130,24 @@ impl BitPrediction {
 	}
 }
 
+//endregion BitPrediction
 // -----------------------------------------------
+//region BitEncoder
 
 struct BitEncoder<W: Write> {
 	low: u64,
 	high: u64,
-	bit_buffer: u8,
-	bit_count: usize,
 	states: Vec<BitPrediction>,
-	output: W,
+	writer: W,
 }
 
 impl<W: Write> BitEncoder<W> {
-	fn new(size: usize, output: W) -> Self {
+	fn new(size: usize, writer: W) -> Self {
 		Self {
 			low: 0,
 			high: 0xFFFFFFFF_FFFFFFFF,
-			bit_buffer: 0,
-			bit_count: 0,
 			states: vec![BitPrediction::new(); size],
-			output,
+			writer,
 		}
 	}
 
@@ -160,24 +164,19 @@ impl<W: Write> BitEncoder<W> {
 		// set new range limit
 		*(if bit != 0 { &mut self.high } else { &mut self.low }) = mid;
 		// shift bits out
-		while (self.high ^ self.low) & 0x80000000_00000000 == 0 {
-			// add to bit buffer
-			self.bit_buffer += self.bit_buffer
-				+ if self.low >= 0x80000000_00000000 { 1 } else { 0 };
-			// shift new bit into high/low
-			self.high += self.high + 1;
-			self.low += self.low;
-			// flush
-			self.bit_count += 1;
-			if self.bit_count == 8 {
-				self.output.write_all(&[self.bit_buffer])?;
-				self.bit_count = 0;
-			}
+		while (self.high ^ self.low) & 0xFF000000_00000000 == 0 {
+			// write byte
+			self.writer.write_all(&[(self.low >> 56) as u8])?;
+			// shift new bits into high/low
+			self.high = (self.high << 8) | 0xFF;
+			self.low = self.low << 8;
 		}
 		// oke
 		return Ok(());
 	}
 
+	// unused, moved to the threaded one
+	#[allow(dead_code)]
 	fn byte(&mut self, context: usize, byte: u8) -> AnyResult<()> {
 		// code high 4 bits in first 15 contexts
 		let high: usize = ((byte >> 4) | 16) as usize;
@@ -197,129 +196,165 @@ impl<W: Write> BitEncoder<W> {
 	}
 
 	fn flush(&mut self) -> AnyResult<()> {
-		// add last bit from low
-		self.bit_buffer += self.bit_buffer
-			+ if self.low >= 0x80000000_00000000 { 1 } else { 0 };
-		self.bit_count += 1;
-		self.bit_buffer <<= 8 - self.bit_count;
 		// write then get out
-		self.output.write_all(&[self.bit_buffer])?;
+		self.writer.write_all(&[(self.low >> 56) as u8])?;
 		// oke
 		Ok(())
 	}
 }
 
-// =================================================================================================
+//endregion BitEncoder
+// -----------------------------------------------
 
-const MSG_LENGTH: usize = 0x100000;
+//endregion Direct Bit Encoding
+// -------------------------------------------------------------------------------------------------
+
+// -------------------------------------------------------------------------------------------------
+//region Threaded Bit Encoding
+
+// -----------------------------------------------
+//region Shared Buffer
+
+const BUFFER_SIZE: usize = 0x100000;
+const BUFFER_SAFE_GUARD: usize = 0x10;
+
+type Buffer = [u32; BUFFER_SIZE];
+type BufferGuarded<'local> = MutexGuard<'local, Buffer>;
+
+#[derive(Clone)]
+struct BufferContainer(Arc<Mutex<Buffer>>);
+
+impl Deref for BufferContainer {
+	type Target = Arc<Mutex<Buffer>>;
+	fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl BufferContainer {
+	fn new() -> Self { Self(Arc::new(Mutex::new([0; BUFFER_SIZE]))) }
+}
+
+//endregion Shared Buffer
+// -----------------------------------------------
+//region BufferedEncoder
+
+struct BufferedEncoder<'local> {
+	buffer: BufferGuarded<'local>,
+	count: usize,
+}
+
+impl<'local> BufferedEncoder<'local> {
+	fn new(buffer: BufferGuarded<'local>) -> Self { Self { buffer, count: 0 } }
+
+	fn full(&self) -> bool { self.count + BUFFER_SAFE_GUARD >= BUFFER_SIZE }
+
+	fn count(&self) -> usize { self.count }
+
+	fn bit(&mut self, context: usize, bit: usize) {
+		assert!(bit == 0 || bit == 1);
+		assert!(context < 0x7FFFFFFF);
+		assert!(self.count < BUFFER_SIZE);
+		self.buffer[self.count] = (context + context + bit) as u32;
+		self.count += 1;
+	}
+
+	fn byte(&mut self, context: usize, byte: u8) {
+		assert!(self.count + 8 < BUFFER_SIZE);
+		assert!(context < 0x7FFFFFFF);
+		// code high 4 bits in first 15 contexts
+		let high: usize = ((byte >> 4) | 16) as usize;
+		self.bit(context + 1, high >> 3 & 1);
+		self.bit(context + (high >> 3), high >> 2 & 1);
+		self.bit(context + (high >> 2), high >> 1 & 1);
+		self.bit(context + (high >> 1), high & 1);
+		// code low 4 bits in one of 16 blocks of 15 contexts (to reduce cache misses)
+		let low_context: usize = context + (15 * (high - 15)) as usize;
+		let low: usize = ((byte & 15) | 16) as usize;
+		self.bit(low_context + 1, low >> 3 & 1);
+		self.bit(low_context + (low >> 3), low >> 2 & 1);
+		self.bit(low_context + (low >> 2), low >> 1 & 1);
+		self.bit(low_context + (low >> 1), low & 1);
+	}
+}
+
+//endregion BufferedEncoder
+// -----------------------------------------------
+//region ThreadMessage
 
 struct ThreadMessage {
-	buffer: Arc<Mutex<[u32; MSG_LENGTH]>>,
+	buffer: BufferContainer,
 	count: usize,
 }
 
 impl ThreadMessage {
-	fn new(buffer: Arc<Mutex<[u32; MSG_LENGTH]>>, count: usize) -> Self {
-		Self {
-			buffer,
-			count,
-		}
-	}
+	fn new(buffer: BufferContainer, count: usize) -> Self { Self { buffer, count } }
 }
 
+//endregion ThreadMessage
 // -----------------------------------------------
+//region ThreadedEncoder
 
-struct ThreadEncoder {
-	buffer_count: usize,
-	buffer_current: bool,
-	buffer_one: Arc<Mutex<[u32; MSG_LENGTH]>>,
-	buffer_two: Arc<Mutex<[u32; MSG_LENGTH]>>,
-	sender: SyncSender<ThreadMessage>,
+struct ThreadedEncoder {
+	buffer_which: bool,
+	buffer_one: BufferContainer,
+	buffer_two: BufferContainer,
+	sender: Sender<ThreadMessage>,
 	thread: JoinHandle<AnyResult<()>>,
 }
 
-impl ThreadEncoder {
+impl ThreadedEncoder {
 	fn new<W: Write + Send + 'static>(size: usize, output: W) -> Self {
-		let (sender, receiver): (SyncSender<ThreadMessage>, Receiver<ThreadMessage>)
-			= sync_channel(MSG_LENGTH);
-		let thread: JoinHandle<AnyResult<()>> = thread::spawn(move || {
-			let mut encoder: BitEncoder<W> = BitEncoder::new(size, output);
-			loop {
-				// receive message
-				let message: ThreadMessage = receiver.recv()?;
-				// encode buffer
-				let buffer = message.buffer.lock()?;
-				for i in 0..message.count {
-					encoder.bit((buffer[i] >> 1) as usize, (buffer[i] & 1) as usize)?;
-				}
-				// done if buffer is not filled
-				if message.count < MSG_LENGTH {
-					// flush and exit
-					return encoder.flush();
-				}
-			}
-		});
+		let (sender, receiver) = channel();
 		Self {
-			buffer_current: true,
-			buffer_count: 0,
-			buffer_one: Arc::new(Mutex::new([0; MSG_LENGTH])),
-			buffer_two: Arc::new(Mutex::new([0; MSG_LENGTH])),
+			buffer_which: true,
+			buffer_one: BufferContainer::new(),
+			buffer_two: BufferContainer::new(),
 			sender,
-			thread,
+			thread: thread::spawn(move || ThreadedEncoder::thread(size, output, receiver)),
 		}
 	}
 
-	fn bit(&mut self, context: usize, bit: usize) -> AnyResult<()> {
-		assert!(bit == 0 || bit == 1);
-		assert!(context < 0x7FFFFFFF);
-		let buffer_reference = if self.buffer_current {
-			&self.buffer_one
-		} else {
-			&self.buffer_two
-		};
-		let mut buffer = buffer_reference.lock()?;
-		buffer[self.buffer_count] = (context + context + bit) as u32;
-		self.buffer_count += 1;
-		if self.buffer_count == MSG_LENGTH {
-			self.sender.send(ThreadMessage::new(
-				buffer_reference.clone(),
-				MSG_LENGTH,
-			))?;
-			self.buffer_current = !self.buffer_current;
-			self.buffer_count = 0;
+	fn thread<W: Write>(
+		size: usize,
+		writer: W,
+		receiver: Receiver<ThreadMessage>,
+	) -> AnyResult<()> {
+		let mut encoder: BitEncoder<W> = BitEncoder::new(size, writer);
+		loop {
+			// receive message
+			let message: ThreadMessage = match receiver.recv() {
+				// receive normally
+				Ok(value) => value,
+				// the sender is closed, breaking out
+				Err(_) => break,
+			};
+			// encode every bit in buffer
+			let buffer = message.buffer.lock()?;
+			for i in 0..message.count {
+				encoder.bit((buffer[i] >> 1) as usize, (buffer[i] & 1) as usize)?;
+			}
 		}
-		// oke
+		return encoder.flush();
+	}
+
+	fn buffer(&self) -> &BufferContainer {
+		if self.buffer_which { &self.buffer_one } else { &self.buffer_two }
+	}
+
+	fn flip(&mut self) {
+		self.buffer_which = !self.buffer_which;
+	}
+
+	fn begin(&self) -> AnyResult<BufferedEncoder> {
+		Ok(BufferedEncoder::new(self.buffer().lock()?))
+	}
+
+	fn end(&self, buffer: BufferedEncoder) -> AnyResult<()> {
+		self.sender.send(ThreadMessage::new(self.buffer().clone(), buffer.count()))?;
 		Ok(())
 	}
 
-	fn byte(&mut self, context: usize, byte: u8) -> AnyResult<()> {
-		// code high 4 bits in first 15 contexts
-		let high: usize = ((byte >> 4) | 16) as usize;
-		self.bit(context + 1, high >> 3 & 1)?;
-		self.bit(context + (high >> 3), high >> 2 & 1)?;
-		self.bit(context + (high >> 2), high >> 1 & 1)?;
-		self.bit(context + (high >> 1), high & 1)?;
-		// code low 4 bits in one of 16 blocks of 15 contexts (to reduce cache misses)
-		let low_context: usize = context + (15 * (high - 15)) as usize;
-		let low: usize = ((byte & 15) | 16) as usize;
-		self.bit(low_context + 1, low >> 3 & 1)?;
-		self.bit(low_context + (low >> 3), low >> 2 & 1)?;
-		self.bit(low_context + (low >> 2), low >> 1 & 1)?;
-		self.bit(low_context + (low >> 1), low & 1)?;
-		// oke
-		return Ok(());
-	}
-
 	fn flush(self) -> AnyResult<()> {
-		let buffer_reference = if self.buffer_current {
-			&self.buffer_one
-		} else {
-			&self.buffer_two
-		};
-		self.sender.send(ThreadMessage::new(
-			buffer_reference.clone(),
-			self.buffer_count,
-		))?;
+		drop(self.sender);
 		match self.thread.join() {
 			Ok(value) => value,
 			Err(_) => Err(AnyError::new("Thread join failed!")),
@@ -327,7 +362,18 @@ impl ThreadEncoder {
 	}
 }
 
+//endregion ThreadedEncoder
+// -----------------------------------------------
+
+//endregion Threaded Bit Encoding
+// -------------------------------------------------------------------------------------------------
+
+//endregion Secondary Context
 // =================================================================================================
+//region Symbol Ranking
+
+// -------------------------------------------------------------------------------------------------
+//region Matching Context
 
 enum ByteMatched {
 	FIRST,
@@ -382,7 +428,9 @@ impl MatchingContext {
 	}
 }
 
-// -----------------------------------------------
+// endregion Matching Context
+// -------------------------------------------------------------------------------------------------
+//region Matching Contexts
 
 struct MatchingContexts {
 	last_byte: u8,
@@ -400,7 +448,7 @@ impl MatchingContexts {
 	}
 
 	fn get_last_byte(&self) -> u8 { self.last_byte }
-	fn get_hash_value(&self) -> usize { self.hash_value }
+	// fn get_hash_value(&self) -> usize { self.hash_value }
 	fn get_context(&self) -> &MatchingContext { &self.contexts[self.hash_value] }
 
 	fn update_match(&mut self, next_byte: u8) -> ByteMatched {
@@ -412,11 +460,16 @@ impl MatchingContexts {
 	}
 }
 
+// endregion Matching Contexts
+// -------------------------------------------------------------------------------------------------
+
+//endregion Symbol Ranking
 // =================================================================================================
+//region StreamEncoder
 
 struct StreamEncoder<R: Read> {
 	contexts: MatchingContexts,
-	encoder: ThreadEncoder,
+	encoder: ThreadedEncoder,
 	input: R,
 }
 
@@ -428,69 +481,79 @@ impl<R: Read> StreamEncoder<R> {
 	) -> Self {
 		Self {
 			contexts: MatchingContexts::new(context_size_log),
-			encoder: ThreadEncoder::new((1024 + 256) * 1024, output),
+			encoder: ThreadedEncoder::new((1024 + 32) * 1024, output),
 			input,
 		}
 	}
 
 	fn encode(mut self) -> AnyResult<()> {
 		loop {
-			let matching_context: &MatchingContext = self.contexts.get_context();
-			let count: usize = matching_context.get_count();
+			let mut encoder = self.encoder.begin()?;
+			loop {
+				let matching_context: &MatchingContext = self.contexts.get_context();
+				let count: usize = matching_context.get_count();
 
-			let bit_context: usize = if count < 4 {
-				((self.contexts.get_last_byte() as usize) << 2) | count
-			} else {
-				1024 + count
-			} * 1024;
+				let bit_context: usize = if count < 4 {
+					((self.contexts.get_last_byte() as usize) << 2) | count
+				} else {
+					1024 + (min(count - 4, 63) >> 1)
+				} * 1024;
 
-			let first_byte: u8 = matching_context.get_first();
-			let second_byte: u8 = matching_context.get_second();
-			let third_byte: u8 = matching_context.get_third();
+				let first_byte: u8 = matching_context.get_first();
+				let second_byte: u8 = matching_context.get_second();
+				let third_byte: u8 = matching_context.get_third();
 
-			let first_context: usize = bit_context + first_byte as usize;
-			let second_context: usize = bit_context + 256
-				+ second_byte.wrapping_add(third_byte) as usize;
-			let third_context: usize = bit_context + 512
-				+ second_byte.wrapping_mul(2).wrapping_sub(third_byte) as usize;
-			let literal_context: usize = bit_context + 768;
+				let first_context: usize = bit_context + first_byte as usize;
+				let second_context: usize = bit_context + 256
+					+ second_byte.wrapping_add(third_byte) as usize;
+				let third_context: usize = bit_context + 512
+					+ second_byte.wrapping_mul(2).wrapping_sub(third_byte) as usize;
+				let literal_context: usize = bit_context + 768;
 
-			let mut byte_result: [u8; 1] = [0];
-			if self.input.read(&mut byte_result)? == 0 {
-				self.encoder.bit(first_context, 1)?;
-				self.encoder.bit(second_context, 0)?;
-				self.encoder.byte(literal_context, first_byte)?;
-				self.encoder.flush()?;
-				// oke
-				return Ok(());
+				let mut byte_result: [u8; 1] = [0];
+				if self.input.read(&mut byte_result)? == 0 {
+					encoder.bit(first_context, 1);
+					encoder.bit(second_context, 0);
+					encoder.byte(literal_context, first_byte);
+
+					self.encoder.end(encoder)?;
+					self.encoder.flush()?;
+					return Ok(());
+				}
+
+				let current_byte: u8 = byte_result[0];
+
+				match self.contexts.update_match(current_byte) {
+					ByteMatched::FIRST => {
+						encoder.bit(first_context, 0);
+					}
+					ByteMatched::SECOND => {
+						encoder.bit(first_context, 1);
+						encoder.bit(second_context, 1);
+						encoder.bit(third_context, 0);
+					}
+					ByteMatched::THIRD => {
+						encoder.bit(first_context, 1);
+						encoder.bit(second_context, 1);
+						encoder.bit(third_context, 1);
+					}
+					ByteMatched::NONE => {
+						encoder.bit(first_context, 1);
+						encoder.bit(second_context, 0);
+						encoder.byte(literal_context, current_byte);
+					}
+				};
+
+				if encoder.full() { break; }
 			}
 
-			let current_byte: u8 = byte_result[0];
-
-			match self.contexts.update_match(current_byte) {
-				ByteMatched::FIRST => {
-					self.encoder.bit(first_context, 0)?;
-				}
-				ByteMatched::SECOND => {
-					self.encoder.bit(first_context, 1)?;
-					self.encoder.bit(second_context, 1)?;
-					self.encoder.bit(third_context, 0)?;
-				}
-				ByteMatched::THIRD => {
-					self.encoder.bit(first_context, 1)?;
-					self.encoder.bit(second_context, 1)?;
-					self.encoder.bit(third_context, 1)?;
-				}
-				ByteMatched::NONE => {
-					self.encoder.bit(first_context, 1)?;
-					self.encoder.bit(second_context, 0)?;
-					self.encoder.byte(literal_context, current_byte)?;
-				}
-			};
+			self.encoder.end(encoder)?;
+			self.encoder.flip();
 		}
 	}
 }
 
+//endregion StreamEncoder
 // =================================================================================================
 
 fn main() {
