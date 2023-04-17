@@ -22,7 +22,7 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::process::exit;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -59,7 +59,7 @@ impl<E: Error> From<E> for AnyError {
 //region Secondary Context
 
 // -------------------------------------------------------------------------------------------------
-//region Direct Bit Encoding
+//region Direct Bit Encoding/Decoding
 
 // -----------------------------------------------
 // region BitPrediction
@@ -109,6 +109,8 @@ struct BitPrediction {
 impl BitPrediction {
 	fn new() -> Self { Self { state: 0x80000000 } }
 
+	fn get_prediction(&self) -> u64 { (self.state >> 8) as u64 }
+
 	// return current prediction and then update the prediction with new bit
 	fn update(&mut self, bit: usize) -> u64 {
 		assert!(bit == 0 || bit == 1);
@@ -152,24 +154,26 @@ impl<W: Write> BitEncoder<W> {
 	}
 
 	fn bit(&mut self, context: usize, bit: usize) -> AnyResult<()> {
+		// checking
+		assert!(self.low < self.high);
+		assert!(context < self.states.len());
 		assert!(bit == 0 || bit == 1);
 		// get prediction
 		let prediction: u64 = self.states[context].update(bit);
 		// get delta
-		assert!(self.low < self.high);
 		let delta: u64 = (((self.high - self.low) as u128 * prediction as u128) >> 24) as u64;
 		// calculate middle
-		let mid: u64 = self.low + delta + (bit ^ 1) as u64;
-		assert!(mid >= self.low && mid < self.high);
+		let middle: u64 = self.low + delta;
+		assert!(self.low <= middle && middle < self.high);
 		// set new range limit
-		*(if bit != 0 { &mut self.high } else { &mut self.low }) = mid;
+		*(if bit != 0 { &mut self.high } else { &mut self.low }) = middle + (bit ^ 1) as u64;
 		// shift bits out
 		while (self.high ^ self.low) & 0xFF000000_00000000 == 0 {
 			// write byte
 			self.writer.write_all(&[(self.low >> 56) as u8])?;
 			// shift new bits into high/low
-			self.high = (self.high << 8) | 0xFF;
 			self.low = self.low << 8;
+			self.high = (self.high << 8) | 0xFF;
 		}
 		// oke
 		return Ok(());
@@ -205,8 +209,79 @@ impl<W: Write> BitEncoder<W> {
 
 //endregion BitEncoder
 // -----------------------------------------------
+//region BitDecoder
 
-//endregion Direct Bit Encoding
+struct BitDecoder<R: Read> {
+	value: u64,
+	low: u64,
+	high: u64,
+	states: Vec<BitPrediction>,
+	reader: R,
+}
+
+impl<R: Read> BitDecoder<R> {
+	fn new(size: usize, reader: R) -> Self {
+		Self {
+			value: 0,
+			low: 0,
+			high: 0,
+			states: vec![BitPrediction::new(); size],
+			reader,
+		}
+	}
+
+	fn bit(&mut self, context: usize) -> AnyResult<usize> {
+		// shift bits in
+		while (self.high ^ self.low) & 0xFF000000_00000000 == 0 {
+			// read byte
+			let mut byte: [u8; 1] = [0];
+			let read: usize = self.reader.read(&mut byte)?;
+			// shift new bits into high/low/value
+			self.value = (self.value << 8) | if read > 0 { byte[0] as u64 } else { 0xFF };
+			self.low = self.low << 8;
+			self.high = (self.high << 8) | 0xFF;
+		}
+		// checking
+		assert!(context < self.states.len());
+		assert!(self.low < self.high);
+		// get prediction
+		let bit_prediction: &mut BitPrediction = &mut self.states[context];
+		let prediction: u64 = bit_prediction.get_prediction();
+		// get delta
+		let delta: u64 = (((self.high - self.low) as u128 * prediction as u128) >> 24) as u64;
+		// calculate middle
+		let middle: u64 = self.low + delta;
+		assert!(self.low <= middle && middle < self.high);
+		// calculate bit
+		let bit: usize = if self.value <= middle { 1 } else { 0 };
+		// update high/low
+		*(if bit != 0 { &mut self.high } else { &mut self.low }) = middle + (bit ^ 1) as u64;
+		// update bit prediction
+		bit_prediction.update(bit);
+		// return the value
+		return Ok(bit);
+	}
+
+	fn byte(&mut self, context: usize) -> AnyResult<u8> {
+		let mut high: usize = 1;
+		high += high + self.bit(context + high)?;
+		high += high + self.bit(context + high)?;
+		high += high + self.bit(context + high)?;
+		high += high + self.bit(context + high)?;
+		let low_context: usize = context + (15 * (high - 15)) as usize;
+		let mut low: usize = 1;
+		low += low + self.bit(low_context + low)?;
+		low += low + self.bit(low_context + low)?;
+		low += low + self.bit(low_context + low)?;
+		low += low + self.bit(low_context + low)?;
+		return Ok((((high - 16) << 4) | (low - 16)) as u8);
+	}
+}
+
+//endregion BitDecoder
+// -----------------------------------------------
+
+//endregion Direct Bit Encoding/Decoding
 // -------------------------------------------------------------------------------------------------
 
 // -------------------------------------------------------------------------------------------------
@@ -375,6 +450,7 @@ impl ThreadedEncoder {
 // -------------------------------------------------------------------------------------------------
 //region Matching Context
 
+#[derive(PartialEq)]
 enum ByteMatched {
 	FIRST,
 	SECOND,
@@ -394,12 +470,16 @@ impl MatchingContext {
 		}
 	}
 
-	fn get_first(&self) -> u8 { self.value as u8 }
-	fn get_second(&self) -> u8 { (self.value >> 8) as u8 }
-	fn get_third(&self) -> u8 { (self.value >> 16) as u8 }
-	fn get_count(&self) -> usize { (self.value >> 24) as usize }
+	fn get(&self) -> (u8, u8, u8, usize) {
+		(
+			self.value as u8, // first byte
+			(self.value >> 8) as u8, // second byte
+			(self.value >> 16) as u8, // third byte
+			(self.value >> 24) as usize // count
+		)
+	}
 
-	fn update_match(&mut self, next_byte: u8) -> ByteMatched {
+	fn matching(&mut self, next_byte: u8) -> ByteMatched {
 		let mask: u32 = self.value ^ (0x10101 * next_byte as u32);
 		return if (mask & 0x0000FF) == 0 { // mask for the first byte
 			// increase count by 1, capped at 255
@@ -426,6 +506,30 @@ impl MatchingContext {
 			ByteMatched::NONE
 		};
 	}
+
+	fn matched(&mut self, next_byte: u8, matched: ByteMatched) {
+		match matched {
+			ByteMatched::FIRST => { // first byte
+				// increase count by 1, capped at 255
+				self.value += if self.value < 0xFF000000 { 0x01000000 } else { 0 };
+			}
+			ByteMatched::SECOND => { // second byte
+				self.value = (self.value & 0xFF0000) // keep the third byte
+					| ((self.value << 8) & 0xFF00) // bring the old first byte to second place
+					| next_byte as u32 // set the first byte
+					| 0x1000000; // set count to 1
+			}
+			ByteMatched::THIRD => { // third byte
+				self.value = ((self.value << 8) & 0xFFFF00) // move old first/second to second/third
+					| next_byte as u32 // set the first byte
+					| 0x1000000; // set count to 1
+			}
+			ByteMatched::NONE => { // not match
+				self.value = ((self.value << 8) & 0xFFFF00) // move old first/second to second/third
+					| next_byte as u32; // set the first byte
+			}
+		}
+	}
 }
 
 // endregion Matching Context
@@ -448,15 +552,22 @@ impl MatchingContexts {
 	}
 
 	fn get_last_byte(&self) -> u8 { self.last_byte }
-	// fn get_hash_value(&self) -> usize { self.hash_value }
+	fn get_hash_value(&self) -> usize { self.hash_value }
 	fn get_context(&self) -> &MatchingContext { &self.contexts[self.hash_value] }
 
-	fn update_match(&mut self, next_byte: u8) -> ByteMatched {
-		let matching_byte: ByteMatched = self.contexts[self.hash_value].update_match(next_byte);
+	fn matching(&mut self, next_byte: u8) -> ByteMatched {
+		let matching_byte: ByteMatched = self.contexts[self.hash_value].matching(next_byte);
 		self.last_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1)
 			& (self.contexts.len() - 1);
 		return matching_byte;
+	}
+
+	fn matched(&mut self, next_byte: u8, matched: ByteMatched) {
+		self.contexts[self.hash_value].matched(next_byte, matched);
+		self.last_byte = next_byte;
+		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1)
+			& (self.contexts.len() - 1);
 	}
 }
 
@@ -465,53 +576,81 @@ impl MatchingContexts {
 
 //endregion Symbol Ranking
 // =================================================================================================
+//region Stream Encoder/Decoder
+
+// -------------------------------------------------------------------------------------------------
+//region StreamContext
+
+const PRIMARY_CONTEXT_SIZE_LOG: usize = 24;
+const SECONDARY_CONTEXT_SIZE: usize = (1024 + 32) * 768 + 0x400000;
+
+struct StreamContexts(MatchingContexts);
+
+impl Deref for StreamContexts {
+	type Target = MatchingContexts;
+	fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl DerefMut for StreamContexts {
+	fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+
+impl StreamContexts {
+	fn new() -> Self { Self(MatchingContexts::new(PRIMARY_CONTEXT_SIZE_LOG)) }
+
+	fn calculate_context(&self) -> (u8, u8, u8, usize, usize, usize, usize) {
+		let (first_byte, second_byte, third_byte, count) = self.get_context().get();
+
+		let bit_context: usize = if count < 4 {
+			((self.get_last_byte() as usize) << 2) | count
+		} else {
+			1024 + (min(count - 4, 63) >> 1)
+		} * 768 + 0x400000;
+
+		let first_context: usize = bit_context + first_byte as usize;
+		let second_context: usize = bit_context + 256
+			+ second_byte.wrapping_add(third_byte) as usize;
+		let third_context: usize = bit_context + 512
+			+ second_byte.wrapping_mul(2).wrapping_sub(third_byte) as usize;
+		let literal_context: usize = (self.get_hash_value() & 0x3FFF) * 256;
+
+		return (first_byte, second_byte, third_byte,
+			first_context, second_context, third_context, literal_context);
+	}
+}
+
+
+//endregion StreamEncoder
+// -------------------------------------------------------------------------------------------------
 //region StreamEncoder
 
 struct StreamEncoder<R: Read> {
-	contexts: MatchingContexts,
+	contexts: StreamContexts,
 	encoder: ThreadedEncoder,
-	input: R,
+	reader: R,
 }
 
 impl<R: Read> StreamEncoder<R> {
-	fn new<W: Write + Send + 'static>(
-		input: R,
-		output: W,
-		context_size_log: usize,
-	) -> Self {
+	fn new<W: Write + Send + 'static>(reader: R, writer: W ) -> Self {
 		Self {
-			contexts: MatchingContexts::new(context_size_log),
-			encoder: ThreadedEncoder::new((1024 + 32) * 1024, output),
-			input,
+			contexts: StreamContexts::new(),
+			encoder: ThreadedEncoder::new(SECONDARY_CONTEXT_SIZE, writer),
+			reader,
 		}
 	}
 
+	#[inline(never)]
 	fn encode(mut self) -> AnyResult<()> {
 		loop {
-			let mut encoder = self.encoder.begin()?;
+			let mut encoder: BufferedEncoder = self.encoder.begin()?;
 			loop {
-				let matching_context: &MatchingContext = self.contexts.get_context();
-				let count: usize = matching_context.get_count();
-
-				let bit_context: usize = if count < 4 {
-					((self.contexts.get_last_byte() as usize) << 2) | count
-				} else {
-					1024 + (min(count - 4, 63) >> 1)
-				} * 1024;
-
-				let first_byte: u8 = matching_context.get_first();
-				let second_byte: u8 = matching_context.get_second();
-				let third_byte: u8 = matching_context.get_third();
-
-				let first_context: usize = bit_context + first_byte as usize;
-				let second_context: usize = bit_context + 256
-					+ second_byte.wrapping_add(third_byte) as usize;
-				let third_context: usize = bit_context + 512
-					+ second_byte.wrapping_mul(2).wrapping_sub(third_byte) as usize;
-				let literal_context: usize = bit_context + 768;
+				let (first_byte, _, _,
+					first_context, second_context,
+					third_context, literal_context)
+					= self.contexts.calculate_context();
 
 				let mut byte_result: [u8; 1] = [0];
-				if self.input.read(&mut byte_result)? == 0 {
+				if self.reader.read(&mut byte_result)? == 0 {
 					encoder.bit(first_context, 1);
 					encoder.bit(second_context, 0);
 					encoder.byte(literal_context, first_byte);
@@ -523,7 +662,7 @@ impl<R: Read> StreamEncoder<R> {
 
 				let current_byte: u8 = byte_result[0];
 
-				match self.contexts.update_match(current_byte) {
+				match self.contexts.matching(current_byte) {
 					ByteMatched::FIRST => {
 						encoder.bit(first_context, 0);
 					}
@@ -554,28 +693,81 @@ impl<R: Read> StreamEncoder<R> {
 }
 
 //endregion StreamEncoder
+// -------------------------------------------------------------------------------------------------
+//region StreamDecoder
+
+struct StreamDecoder<R: Read, W: Write> {
+	contexts: StreamContexts,
+	decoder: BitDecoder<R>,
+	writer: W,
+}
+
+impl<R: Read, W: Write> StreamDecoder<R, W> {
+	fn new(reader: R, writer: W ) -> Self {
+		Self {
+			contexts: StreamContexts::new(),
+			decoder: BitDecoder::new(SECONDARY_CONTEXT_SIZE, reader),
+			writer,
+		}
+	}
+
+	#[inline(never)]
+	fn decode(mut self) -> AnyResult<()> {
+		loop {
+			let (first_byte, second_byte, third_byte,
+				first_context, second_context,
+				third_context, literal_context)
+				= self.contexts.calculate_context();
+
+			let (next_byte, matched) = if self.decoder.bit(first_context)? == 0 {
+				// match first
+				(first_byte, ByteMatched::FIRST)
+			} else if self.decoder.bit(second_context)? == 0 {
+				// literal
+				let next_byte: u8 = self.decoder.byte(literal_context)?;
+				if next_byte == first_byte { return Ok(()); }
+				(next_byte, ByteMatched::NONE)
+			} else if self.decoder.bit(third_context)? == 0 {
+				// match second
+				(second_byte, ByteMatched::SECOND)
+			} else {
+				// match third
+				(third_byte, ByteMatched::THIRD)
+			};
+			self.writer.write_all(&[next_byte])?;
+			self.contexts.matched(next_byte, matched);
+		}
+	}
+}
+
+//endregion StreamDecoder
+// -------------------------------------------------------------------------------------------------
+
+//endregion Stream Encoder/Decoder
 // =================================================================================================
 
 fn main() {
 	let args: Vec<String> = env::args().collect();
-	if args.len() != 3 {
-		println!("Usage: rust-srx <input> <output>");
+	if args.len() != 4 || !(args[1].starts_with("c") || args[1].starts_with("d")) {
+		println!("Usage: rust-srx <c/d> <input> <output>");
 		exit(0);
 	}
 
-	let input: File = File::open(Path::new(&args[1])).unwrap();
-	let output: File = File::create(Path::new(&args[2])).unwrap();
+	let reader: File = File::open(Path::new(&args[2])).unwrap();
+	let writer: File = File::create(Path::new(&args[3])).unwrap();
 
-	let buffered_input = BufReader::with_capacity(1 << 24, input);
-	let buffered_output = BufWriter::with_capacity(1 << 24, output);
-
-	// let thread_safe_output: Output<BufWriter<File>> = Output::new(buffered_output);
-
-	let encoder: StreamEncoder<BufReader<File>> =
-		StreamEncoder::new(buffered_input, buffered_output, 24);
+	let buffered_reader = BufReader::with_capacity(1 << 24, reader);
+	let buffered_writer = BufWriter::with_capacity(1 << 24, writer);
 
 	let start: Instant = Instant::now();
-	encoder.encode().unwrap();
+
+	if args[1].starts_with("c") {
+		StreamEncoder::new(buffered_reader, buffered_writer)
+			.encode().unwrap();
+	} else {
+		StreamDecoder::new(buffered_reader, buffered_writer)
+			.decode().unwrap();
+	}
 	let duration: f64 = start.elapsed().as_millis() as f64 / 1000.0;
 
 	println!("Ran in {:.2} second(s).", duration);
