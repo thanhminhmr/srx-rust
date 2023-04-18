@@ -21,7 +21,7 @@ use std::cmp::min;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::process::exit;
@@ -31,7 +31,7 @@ use std::thread::JoinHandle;
 use std::time::Instant;
 
 // =================================================================================================
-
+//region AnyError
 type AnyResult<T> = Result<T, AnyError>;
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ impl<E: Error> From<E> for AnyError {
 		Self(e.to_string())
 	}
 }
-
+//endregion AnyError
 // =================================================================================================
 //region Secondary Context
 
@@ -199,11 +199,11 @@ impl<W: Write> BitEncoder<W> {
 		return Ok(());
 	}
 
-	fn flush(&mut self) -> AnyResult<()> {
+	fn flush(mut self) -> AnyResult<W> {
 		// write then get out
 		self.writer.write_all(&[(self.low >> 56) as u8])?;
-		// oke
-		Ok(())
+		// oke, give back the writer
+		Ok(self.writer)
 	}
 }
 
@@ -276,6 +276,8 @@ impl<R: Read> BitDecoder<R> {
 		low += low + self.bit(low_context + low)?;
 		return Ok((((high - 16) << 4) | (low - 16)) as u8);
 	}
+
+	fn flush(self) -> R { self.reader }
 }
 
 //endregion BitDecoder
@@ -368,16 +370,16 @@ impl ThreadMessage {
 // -----------------------------------------------
 //region ThreadedEncoder
 
-struct ThreadedEncoder {
+struct ThreadedEncoder<W: Write + Send + 'static> {
 	buffer_which: bool,
 	buffer_one: BufferContainer,
 	buffer_two: BufferContainer,
 	sender: Sender<ThreadMessage>,
-	thread: JoinHandle<AnyResult<()>>,
+	thread: JoinHandle<AnyResult<W>>,
 }
 
-impl ThreadedEncoder {
-	fn new<W: Write + Send + 'static>(size: usize, output: W) -> Self {
+impl<W: Write + Send + 'static> ThreadedEncoder<W> {
+	fn new(size: usize, output: W) -> Self {
 		let (sender, receiver) = channel();
 		Self {
 			buffer_which: true,
@@ -388,11 +390,7 @@ impl ThreadedEncoder {
 		}
 	}
 
-	fn thread<W: Write>(
-		size: usize,
-		writer: W,
-		receiver: Receiver<ThreadMessage>,
-	) -> AnyResult<()> {
+	fn thread(size: usize, writer: W, receiver: Receiver<ThreadMessage>) -> AnyResult<W> {
 		let mut encoder: BitEncoder<W> = BitEncoder::new(size, writer);
 		loop {
 			// receive message
@@ -428,7 +426,7 @@ impl ThreadedEncoder {
 		Ok(())
 	}
 
-	fn flush(self) -> AnyResult<()> {
+	fn flush(self) -> AnyResult<W> {
 		drop(self.sender);
 		match self.thread.join() {
 			Ok(value) => value,
@@ -624,14 +622,14 @@ impl StreamContexts {
 // -------------------------------------------------------------------------------------------------
 //region StreamEncoder
 
-struct StreamEncoder<R: Read> {
+struct StreamEncoder<R: Read, W: Write + Send + 'static> {
 	contexts: StreamContexts,
-	encoder: ThreadedEncoder,
+	encoder: ThreadedEncoder<W>,
 	reader: R,
 }
 
-impl<R: Read> StreamEncoder<R> {
-	fn new<W: Write + Send + 'static>(reader: R, writer: W ) -> Self {
+impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
+	fn new(reader: R, writer: W) -> Self {
 		Self {
 			contexts: StreamContexts::new(),
 			encoder: ThreadedEncoder::new(SECONDARY_CONTEXT_SIZE, writer),
@@ -640,7 +638,7 @@ impl<R: Read> StreamEncoder<R> {
 	}
 
 	#[inline(never)]
-	fn encode(mut self) -> AnyResult<()> {
+	fn encode(mut self) -> AnyResult<(R, W)> {
 		loop {
 			let mut encoder: BufferedEncoder = self.encoder.begin()?;
 			loop {
@@ -651,13 +649,15 @@ impl<R: Read> StreamEncoder<R> {
 
 				let mut byte_result: [u8; 1] = [0];
 				if self.reader.read(&mut byte_result)? == 0 {
+					// eof, encoded using first byte as literal
 					encoder.bit(first_context, 1);
 					encoder.bit(second_context, 0);
 					encoder.byte(literal_context, first_byte);
 
 					self.encoder.end(encoder)?;
-					self.encoder.flush()?;
-					return Ok(());
+					let writer = self.encoder.flush()?;
+					// gave the reader/writer back
+					return Ok((self.reader, writer));
 				}
 
 				let current_byte: u8 = byte_result[0];
@@ -703,7 +703,7 @@ struct StreamDecoder<R: Read, W: Write> {
 }
 
 impl<R: Read, W: Write> StreamDecoder<R, W> {
-	fn new(reader: R, writer: W ) -> Self {
+	fn new(reader: R, writer: W) -> Self {
 		Self {
 			contexts: StreamContexts::new(),
 			decoder: BitDecoder::new(SECONDARY_CONTEXT_SIZE, reader),
@@ -712,7 +712,7 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
 	}
 
 	#[inline(never)]
-	fn decode(mut self) -> AnyResult<()> {
+	fn decode(mut self) -> AnyResult<(R, W)> {
 		loop {
 			let (first_byte, second_byte, third_byte,
 				first_context, second_context,
@@ -725,7 +725,11 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
 			} else if self.decoder.bit(second_context)? == 0 {
 				// literal
 				let next_byte: u8 = self.decoder.byte(literal_context)?;
-				if next_byte == first_byte { return Ok(()); }
+				if next_byte == first_byte {
+					// eof, gave the reader/writer back
+					let reader = self.decoder.flush();
+					return Ok((reader, self.writer));
+				}
 				(next_byte, ByteMatched::NONE)
 			} else if self.decoder.bit(third_context)? == 0 {
 				// match second
@@ -749,36 +753,44 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
 fn main() {
 	let args: Vec<String> = env::args().collect();
 	if args.len() != 4 || !(args[1].starts_with("c") || args[1].starts_with("d")) {
-		println!("Usage: rust-srx <c/d> <input> <output>");
+		println!("\
+		srx: The fast Symbol Ranking based compressor.\n\
+		Copyright (C) 2023  Mai Thanh Minh (a.k.a. thanhminhmr)\n\n\
+		To   compress: srx c <input-file> <output-file>\n\
+		To decompress: srx d <input-file> <output-file>");
 		exit(0);
 	}
 
+	// open file
 	let reader: File = File::open(Path::new(&args[2])).unwrap();
 	let writer: File = File::create(Path::new(&args[3])).unwrap();
 
-	let buffered_reader = BufReader::with_capacity(1 << 24, reader);
-	let buffered_writer = BufWriter::with_capacity(1 << 24, writer);
+	// wrap it in buffered reader/writer
+	let buffered_reader: BufReader<File> = BufReader::with_capacity(1 << 20, reader);
+	let buffered_writer: BufWriter<File> = BufWriter::with_capacity(1 << 20, writer);
 
+	// start the timer
 	let start: Instant = Instant::now();
 
-	if args[1].starts_with("c") {
-		StreamEncoder::new(buffered_reader, buffered_writer)
-			.encode().unwrap();
-	} else {
-		StreamDecoder::new(buffered_reader, buffered_writer)
-			.decode().unwrap();
-	}
+	// do the compression/decompression
+	let (mut done_reader, mut done_writer): (BufReader<File>, BufWriter<File>) =
+		if args[1].starts_with("c") {
+			StreamEncoder::new(buffered_reader, buffered_writer)
+				.encode().unwrap()
+		} else {
+			StreamDecoder::new(buffered_reader, buffered_writer)
+				.decode().unwrap()
+		};
+
+	// stop the timer and calculate the duration
 	let duration: f64 = start.elapsed().as_millis() as f64 / 1000.0;
 
-	println!("Ran in {:.2} second(s).", duration);
+	let input_size: u64 = done_reader.stream_position().unwrap();
+	let output_size: u64 = done_writer.stream_position().unwrap();
 
-	// let input_size: u64 = buffered_input.stream_position().unwrap();
-	// let output_size: u64 = buffered_output.stream_position().unwrap();
-	//
-	// println!("{} -> {} ({:.2}%) in {:.2} seconds ({:.2} MB/s)",
-	// 	input_size,
-	// 	output_size,
-	// 	output_size as f64 / input_size as f64 * 100.0,
-	// 	duration,
-	// 	input_size as f64 / duration / 1024.0 / 1024.0);
+	let percentage: f64 = output_size as f64 / input_size as f64 * 100.0;
+	let speed: f64 = input_size as f64 / duration / (1 << 20) as f64;
+
+	println!("{} -> {} ({:.2}%) in {:.2} seconds ({:.2} MB/s)",
+		input_size, output_size, percentage, duration, speed);
 }
