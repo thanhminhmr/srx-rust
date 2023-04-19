@@ -102,22 +102,20 @@ const MULTIPLIER: [u32; 256] = [
 
 // lower 8-bit is a counter, higher 24-bit is prediction
 #[derive(Clone)]
-struct BitPrediction {
-	state: u32,
-}
+struct BitPrediction(u32);
 
 impl BitPrediction {
-	fn new() -> Self { Self { state: 0x80000000 } }
+	fn new() -> Self { Self(0x80000000) }
 
-	fn get_prediction(&self) -> u64 { (self.state >> 8) as u64 }
+	fn get_prediction(&self) -> u64 { (self.0 >> 8) as u64 }
 
 	// return current prediction and then update the prediction with new bit
 	fn update(&mut self, bit: usize) -> u64 {
 		assert!(bit == 0 || bit == 1);
 		// get bit 0-7 as count
-		let count: usize = (self.state & 0xFF) as usize;
+		let count: usize = (self.0 & 0xFF) as usize;
 		// get bit 8-31 as current prediction
-		let current_prediction: i64 = (self.state >> 8) as i64;
+		let current_prediction: i64 = (self.0 >> 8) as i64;
 		// create bit shift
 		let bit_shift: i64 = (bit as i64) << 24;
 		// get multiplier
@@ -125,7 +123,7 @@ impl BitPrediction {
 		// calculate new prediction
 		let new_prediction: u32 = (((bit_shift - current_prediction) * multiplier) >> 24) as u32;
 		// update state
-		self.state = self.state.wrapping_add((new_prediction & 0xFFFFFF00)
+		self.0 = self.0.wrapping_add((new_prediction & 0xFFFFFF00)
 			+ if count < 255 { 1 } else { 0 });
 		// return current prediction (before update)
 		return current_prediction as u64;
@@ -295,7 +293,7 @@ impl<R: Read> BitDecoder<R> {
 const BUFFER_SIZE: usize = 0x10000;
 const BUFFER_SAFE_GUARD: usize = 0x10;
 
-type Buffer = Vec<u32>;
+type Buffer = Box<[u32]>;
 type BufferGuarded<'local> = MutexGuard<'local, Buffer>;
 
 #[derive(Clone)]
@@ -307,7 +305,7 @@ impl Deref for BufferContainer {
 }
 
 impl BufferContainer {
-	fn new() -> Self { Self(Arc::new(Mutex::new(vec![0; BUFFER_SIZE]))) }
+	fn new() -> Self { Self(Arc::new(Mutex::new(vec![0; BUFFER_SIZE].into_boxed_slice()))) }
 }
 
 //endregion Shared Buffer
@@ -380,7 +378,8 @@ struct ThreadedEncoder<W: Write + Send + 'static> {
 
 impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 	fn new(size: usize, output: W) -> Self {
-		let (sender, receiver) = sync_channel(1);
+		let (sender, receiver): (SyncSender<ThreadMessage>, Receiver<ThreadMessage>)
+			= sync_channel(1);
 		Self {
 			buffer_which: true,
 			buffer_one: BufferContainer::new(),
@@ -401,7 +400,7 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 				Err(_) => break,
 			};
 			// encode every bit in buffer
-			let buffer = message.buffer.lock()?;
+			let buffer: MutexGuard<Buffer> = message.buffer.lock()?;
 			for i in 0..message.count {
 				encoder.bit((buffer[i] >> 1) as usize, (buffer[i] & 1) as usize)?;
 			}
@@ -448,7 +447,6 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 // -------------------------------------------------------------------------------------------------
 //region Matching Context
 
-#[derive(PartialEq)]
 enum ByteMatched {
 	FIRST,
 	SECOND,
@@ -558,6 +556,7 @@ impl MatchingContexts {
 		self.last_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1)
 			& (self.contexts.len() - 1);
+		assert!(self.hash_value < self.contexts.len());
 		return matching_byte;
 	}
 
@@ -566,6 +565,7 @@ impl MatchingContexts {
 		self.last_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1)
 			& (self.contexts.len() - 1);
+		assert!(self.hash_value < self.contexts.len());
 	}
 }
 
@@ -655,13 +655,12 @@ impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
 					encoder.byte(literal_context, first_byte);
 
 					self.encoder.end(encoder)?;
-					let writer = self.encoder.flush()?;
+					let writer: W = self.encoder.flush()?;
 					// gave the reader/writer back
 					return Ok((self.reader, writer));
 				}
 
 				let current_byte: u8 = byte_result[0];
-
 				match self.contexts.matching(current_byte) {
 					ByteMatched::FIRST => {
 						encoder.bit(first_context, 0);
@@ -719,25 +718,26 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
 				third_context, literal_context)
 				= self.contexts.calculate_context();
 
-			let (next_byte, matched) = if self.decoder.bit(first_context)? == 0 {
-				// match first
-				(first_byte, ByteMatched::FIRST)
-			} else if self.decoder.bit(second_context)? == 0 {
-				// literal
-				let next_byte: u8 = self.decoder.byte(literal_context)?;
-				if next_byte == first_byte {
-					// eof, gave the reader/writer back
-					let reader = self.decoder.flush();
-					return Ok((reader, self.writer));
-				}
-				(next_byte, ByteMatched::NONE)
-			} else if self.decoder.bit(third_context)? == 0 {
-				// match second
-				(second_byte, ByteMatched::SECOND)
-			} else {
-				// match third
-				(third_byte, ByteMatched::THIRD)
-			};
+			let (next_byte, matched) =
+				if self.decoder.bit(first_context)? == 0 {
+					// match first
+					(first_byte, ByteMatched::FIRST)
+				} else if self.decoder.bit(second_context)? == 0 {
+					// literal
+					let next_byte: u8 = self.decoder.byte(literal_context)?;
+					if next_byte == first_byte {
+						// eof, gave the reader/writer back
+						let reader = self.decoder.flush();
+						return Ok((reader, self.writer));
+					}
+					(next_byte, ByteMatched::NONE)
+				} else if self.decoder.bit(third_context)? == 0 {
+					// match second
+					(second_byte, ByteMatched::SECOND)
+				} else {
+					// match third
+					(third_byte, ByteMatched::THIRD)
+				};
 			self.writer.write_all(&[next_byte])?;
 			self.contexts.matched(next_byte, matched);
 		}
@@ -775,11 +775,9 @@ fn main() {
 	// do the compression/decompression
 	let (mut done_reader, mut done_writer): (BufReader<File>, BufWriter<File>) =
 		if args[1].starts_with("c") {
-			StreamEncoder::new(buffered_reader, buffered_writer)
-				.encode().unwrap()
+			StreamEncoder::new(buffered_reader, buffered_writer).encode().unwrap()
 		} else {
-			StreamDecoder::new(buffered_reader, buffered_writer)
-				.decode().unwrap()
+			StreamDecoder::new(buffered_reader, buffered_writer).decode().unwrap()
 		};
 
 	// stop the timer and calculate the duration
