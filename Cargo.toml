@@ -1,9 +1,8 @@
 [package]
 name = "srx"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
-# temp for test
 [profile.release]
 debug = true
 lto = true

@@ -1,4 +1,4 @@
-name: Release
+name: Compile and release
 on:
   release:
     types: [created, edited]
@@ -28,4 +28,4 @@ jobs:
           RUSTTARGET: ${{ matrix.target }}
           EXTRA_FILES: "README.md LICENSE"
           ARCHIVE_TYPES: ${{ matrix.archive }}
-          MINIFY: "yes"
+          MINIFY: "true"
