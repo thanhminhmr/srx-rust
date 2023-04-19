@@ -292,10 +292,10 @@ impl<R: Read> BitDecoder<R> {
 // -----------------------------------------------
 //region Shared Buffer
 
-const BUFFER_SIZE: usize = 0x100000;
+const BUFFER_SIZE: usize = 0x10000;
 const BUFFER_SAFE_GUARD: usize = 0x10;
 
-type Buffer = [u32; BUFFER_SIZE];
+type Buffer = Vec<u32>;
 type BufferGuarded<'local> = MutexGuard<'local, Buffer>;
 
 #[derive(Clone)]
@@ -307,7 +307,7 @@ impl Deref for BufferContainer {
 }
 
 impl BufferContainer {
-	fn new() -> Self { Self(Arc::new(Mutex::new([0; BUFFER_SIZE]))) }
+	fn new() -> Self { Self(Arc::new(Mutex::new(vec![0; BUFFER_SIZE]))) }
 }
 
 //endregion Shared Buffer
