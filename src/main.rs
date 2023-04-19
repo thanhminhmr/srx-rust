@@ -26,7 +26,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::process::exit;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, sync_channel, SyncSender};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -374,13 +374,13 @@ struct ThreadedEncoder<W: Write + Send + 'static> {
 	buffer_which: bool,
 	buffer_one: BufferContainer,
 	buffer_two: BufferContainer,
-	sender: Sender<ThreadMessage>,
+	sender: SyncSender<ThreadMessage>,
 	thread: JoinHandle<AnyResult<W>>,
 }
 
 impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 	fn new(size: usize, output: W) -> Self {
-		let (sender, receiver) = channel();
+		let (sender, receiver) = sync_channel(1);
 		Self {
 			buffer_which: true,
 			buffer_one: BufferContainer::new(),
