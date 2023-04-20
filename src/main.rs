@@ -396,11 +396,13 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 			let message: ThreadMessage = match receiver.recv() {
 				// receive normally
 				Ok(value) => value,
-				// the sender is closed, breaking out
-				Err(_) => break,
+				// the sender is closed, something wrong happened
+				Err(_) => return Err(AnyError::new("Broken connection between threads!")),
 			};
+			// check if this is the end, exit if it is
+			if message.count > BUFFER_SIZE { break }
 			// encode every bit in buffer
-			let buffer: MutexGuard<Buffer> = message.buffer.lock()?;
+			let buffer: BufferGuarded = message.buffer.lock()?;
 			for i in 0..message.count {
 				encoder.bit((buffer[i] >> 1) as usize, (buffer[i] & 1) as usize)?;
 			}
@@ -426,7 +428,7 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 	}
 
 	fn flush(self) -> AnyResult<W> {
-		drop(self.sender);
+		self.sender.send(ThreadMessage::new(self.buffer().clone(), BUFFER_SIZE + 1))?;
 		match self.thread.join() {
 			Ok(value) => value,
 			Err(_) => Err(AnyError::new("Thread join failed!")),
