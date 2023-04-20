@@ -153,16 +153,16 @@ impl<W: Write> BitEncoder<W> {
 
 	fn bit(&mut self, context: usize, bit: usize) -> AnyResult<()> {
 		// checking
-		assert!(self.low < self.high);
-		assert!(context < self.states.len());
-		assert!(bit == 0 || bit == 1);
+		debug_assert!(self.low < self.high);
+		debug_assert!(context < self.states.len());
+		debug_assert!(bit == 0 || bit == 1);
 		// get prediction
 		let prediction: u32 = self.states[context].update(bit);
 		// get delta
 		let delta: u32 = (((self.high - self.low) as u64 * prediction as u64) >> 32) as u32;
 		// calculate middle
 		let middle: u32 = self.low + delta;
-		assert!(self.low <= middle && middle < self.high);
+		debug_assert!(self.low <= middle && middle < self.high);
 		// set new range limit
 		*(if bit != 0 { &mut self.high } else { &mut self.low }) = middle + (bit ^ 1) as u32;
 		// shift bits out
@@ -240,8 +240,8 @@ impl<R: Read> BitDecoder<R> {
 			self.high = (self.high << 8) | 0xFF;
 		}
 		// checking
-		assert!(context < self.states.len());
-		assert!(self.low < self.high);
+		debug_assert!(context < self.states.len());
+		debug_assert!(self.low < self.high);
 		// get prediction
 		let bit_prediction: &mut BitPrediction = &mut self.states[context];
 		let prediction: u32 = bit_prediction.get_prediction();
@@ -249,7 +249,7 @@ impl<R: Read> BitDecoder<R> {
 		let delta: u32 = (((self.high - self.low) as u64 * prediction as u64) >> 32) as u32;
 		// calculate middle
 		let middle: u32 = self.low + delta;
-		assert!(self.low <= middle && middle < self.high);
+		debug_assert!(self.low <= middle && middle < self.high);
 		// calculate bit
 		let bit: usize = if self.value <= middle { 1 } else { 0 };
 		// update high/low
@@ -325,16 +325,16 @@ impl<'local> BufferedEncoder<'local> {
 	fn count(&self) -> usize { self.count }
 
 	fn bit(&mut self, context: usize, bit: usize) {
-		assert!(bit == 0 || bit == 1);
-		assert!(context < 0x7FFFFFFF);
-		assert!(self.count < BUFFER_SIZE);
+		debug_assert!(bit == 0 || bit == 1);
+		debug_assert!(context < 0x7FFFFFFF);
+		debug_assert!(self.count < BUFFER_SIZE);
 		self.buffer[self.count] = (context + context + bit) as u32;
 		self.count += 1;
 	}
 
 	fn byte(&mut self, context: usize, byte: u8) {
-		assert!(self.count + 8 < BUFFER_SIZE);
-		assert!(context < 0x7FFFFFFF);
+		debug_assert!(self.count + 8 < BUFFER_SIZE);
+		debug_assert!(context < 0x7FFFFFFF);
 		// code high 4 bits in first 15 contexts
 		let high: usize = ((byte >> 4) | 16) as usize;
 		self.bit(context + 1, high >> 3 & 1);
@@ -558,7 +558,7 @@ impl MatchingContexts {
 		self.last_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1)
 			& (self.contexts.len() - 1);
-		assert!(self.hash_value < self.contexts.len());
+		debug_assert!(self.hash_value < self.contexts.len());
 		return matching_byte;
 	}
 
@@ -567,7 +567,7 @@ impl MatchingContexts {
 		self.last_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1)
 			& (self.contexts.len() - 1);
-		assert!(self.hash_value < self.contexts.len());
+		debug_assert!(self.hash_value < self.contexts.len());
 	}
 }
 
