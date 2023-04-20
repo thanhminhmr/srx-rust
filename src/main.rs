@@ -793,10 +793,10 @@ fn run(input_path: &Path, output_path: &Path, is_compress: bool) -> AnyResult<(u
 
 fn help() -> ! {
 	println!("\
-		srx: The fast Symbol Ranking based compressor.\n\
+		srx: The fast Symbol Ranking based compressor, version {}.\n\
 		Copyright (C) 2023  Mai Thanh Minh (a.k.a. thanhminhmr)\n\n\
 		To   compress: srx c <input-file> <output-file>\n\
-		To decompress: srx d <input-file> <output-file>");
+		To decompress: srx d <input-file> <output-file>", env!("CARGO_PKG_VERSION"));
 	exit(0);
 }
 
