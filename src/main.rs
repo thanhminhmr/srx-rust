@@ -177,8 +177,6 @@ impl<W: Write> BitEncoder<W> {
 		return Ok(());
 	}
 
-	// unused, moved to the threaded one
-	#[allow(dead_code)]
 	fn byte(&mut self, context: usize, byte: u8) -> AnyResult<()> {
 		// code high 4 bits in first 15 contexts
 		let high: usize = ((byte >> 4) | 16) as usize;
@@ -291,7 +289,7 @@ impl<R: Read> BitDecoder<R> {
 //region Shared Buffer
 
 const BUFFER_SIZE: usize = 0x10000;
-const BUFFER_SAFE_GUARD: usize = 0x10;
+const BUFFER_SAFE_GUARD: usize = 0x8;
 
 type Buffer = Box<[u32]>;
 type BufferGuarded<'local> = MutexGuard<'local, Buffer>;
@@ -326,28 +324,17 @@ impl<'local> BufferedEncoder<'local> {
 
 	fn bit(&mut self, context: usize, bit: usize) {
 		debug_assert!(bit == 0 || bit == 1);
-		debug_assert!(context < 0x7FFFFFFF);
+		debug_assert!(context <= 0x007FFFFF);
 		debug_assert!(self.count < BUFFER_SIZE);
-		self.buffer[self.count] = (context + context + bit) as u32;
+		self.buffer[self.count] = ((context << 9) + bit) as u32;
 		self.count += 1;
 	}
 
 	fn byte(&mut self, context: usize, byte: u8) {
-		debug_assert!(self.count + 8 < BUFFER_SIZE);
-		debug_assert!(context < 0x7FFFFFFF);
-		// code high 4 bits in first 15 contexts
-		let high: usize = ((byte >> 4) | 16) as usize;
-		self.bit(context + 1, high >> 3 & 1);
-		self.bit(context + (high >> 3), high >> 2 & 1);
-		self.bit(context + (high >> 2), high >> 1 & 1);
-		self.bit(context + (high >> 1), high & 1);
-		// code low 4 bits in one of 16 blocks of 15 contexts (to reduce cache misses)
-		let low_context: usize = context + (15 * (high - 15)) as usize;
-		let low: usize = ((byte & 15) | 16) as usize;
-		self.bit(low_context + 1, low >> 3 & 1);
-		self.bit(low_context + (low >> 3), low >> 2 & 1);
-		self.bit(low_context + (low >> 2), low >> 1 & 1);
-		self.bit(low_context + (low >> 1), low & 1);
+		debug_assert!(self.count < BUFFER_SIZE);
+		debug_assert!(context <= 0x007FFFFF);
+		self.buffer[self.count] = ((context << 9) + (byte as usize) + 0x100) as u32;
+		self.count += 1;
 	}
 }
 
@@ -404,7 +391,12 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 			// encode every bit in buffer
 			let buffer: BufferGuarded = message.buffer.lock()?;
 			for i in 0..message.count {
-				encoder.bit((buffer[i] >> 1) as usize, (buffer[i] & 1) as usize)?;
+				let value: usize = buffer[i] as usize;
+				if value & 0x100 == 0 {
+					encoder.bit(value >> 9, value & 1)?;
+				} else {
+					encoder.byte(value >> 9, (value & 0xFF) as u8)?;
+				}
 			}
 		}
 		return encoder.flush();
