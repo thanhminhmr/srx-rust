@@ -137,7 +137,7 @@ impl BitPrediction {
 struct BitEncoder<W: Write> {
 	low: u32,
 	high: u32,
-	states: Vec<BitPrediction>,
+	states: Box<[BitPrediction]>,
 	writer: W,
 }
 
@@ -146,7 +146,7 @@ impl<W: Write> BitEncoder<W> {
 		Self {
 			low: 0,
 			high: 0xFFFFFFFF,
-			states: vec![BitPrediction::new(); size],
+			states: vec![BitPrediction::new(); size].into_boxed_slice(),
 			writer,
 		}
 	}
@@ -211,7 +211,7 @@ struct BitDecoder<R: Read> {
 	value: u32,
 	low: u32,
 	high: u32,
-	states: Vec<BitPrediction>,
+	states: Box<[BitPrediction]>,
 	reader: R,
 }
 
@@ -221,7 +221,7 @@ impl<R: Read> BitDecoder<R> {
 			value: 0,
 			low: 0,
 			high: 0,
-			states: vec![BitPrediction::new(); size],
+			states: vec![BitPrediction::new(); size].into_boxed_slice(),
 			reader,
 		}
 	}
@@ -449,48 +449,42 @@ enum ByteMatched {
 }
 
 #[derive(Clone)]
-struct MatchingContext {
-	value: u32,
-}
+struct MatchingContext(u32);
 
 impl MatchingContext {
-	fn new() -> Self {
-		Self {
-			value: 0
-		}
-	}
+	fn new() -> Self { Self(0) }
 
 	fn get(&self) -> (u8, u8, u8, usize) {
 		(
-			self.value as u8, // first byte
-			(self.value >> 8) as u8, // second byte
-			(self.value >> 16) as u8, // third byte
-			(self.value >> 24) as usize // count
+			self.0 as u8, // first byte
+			(self.0 >> 8) as u8, // second byte
+			(self.0 >> 16) as u8, // third byte
+			(self.0 >> 24) as usize // count
 		)
 	}
 
 	fn matching(&mut self, next_byte: u8) -> ByteMatched {
-		let mask: u32 = self.value ^ (0x10101 * next_byte as u32);
+		let mask: u32 = self.0 ^ (0x10101 * next_byte as u32);
 		return if (mask & 0x0000FF) == 0 { // mask for the first byte
 			// increase count by 1, capped at 255
-			self.value += if self.value < 0xFF000000 { 0x01000000 } else { 0 };
+			self.0 += if self.0 < 0xFF000000 { 0x01000000 } else { 0 };
 
 			ByteMatched::FIRST
 		} else if (mask & 0x00FF00) == 0 { // mask for the second byte
-			self.value = (self.value & 0xFF0000) // keep the third byte
-				| ((self.value << 8) & 0xFF00) // bring the old first byte to second place
+			self.0 = (self.0 & 0xFF0000) // keep the third byte
+				| ((self.0 << 8) & 0xFF00) // bring the old first byte to second place
 				| next_byte as u32 // set the first byte
 				| 0x1000000; // set count to 1
 
 			ByteMatched::SECOND
 		} else if (mask & 0xFF0000) == 0 {  // mask for the third byte
-			self.value = ((self.value << 8) & 0xFFFF00) // move old first/second to second/third
+			self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
 				| next_byte as u32 // set the first byte
 				| 0x1000000; // set count to 1
 
 			ByteMatched::THIRD
 		} else { // not match
-			self.value = ((self.value << 8) & 0xFFFF00) // move old first/second to second/third
+			self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
 				| next_byte as u32; // set the first byte
 
 			ByteMatched::NONE
@@ -501,21 +495,21 @@ impl MatchingContext {
 		match matched {
 			ByteMatched::FIRST => { // first byte
 				// increase count by 1, capped at 255
-				self.value += if self.value < 0xFF000000 { 0x01000000 } else { 0 };
+				self.0 += if self.0 < 0xFF000000 { 0x01000000 } else { 0 };
 			}
 			ByteMatched::SECOND => { // second byte
-				self.value = (self.value & 0xFF0000) // keep the third byte
-					| ((self.value << 8) & 0xFF00) // bring the old first byte to second place
+				self.0 = (self.0 & 0xFF0000) // keep the third byte
+					| ((self.0 << 8) & 0xFF00) // bring the old first byte to second place
 					| next_byte as u32 // set the first byte
 					| 0x1000000; // set count to 1
 			}
 			ByteMatched::THIRD => { // third byte
-				self.value = ((self.value << 8) & 0xFFFF00) // move old first/second to second/third
+				self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
 					| next_byte as u32 // set the first byte
 					| 0x1000000; // set count to 1
 			}
 			ByteMatched::NONE => { // not match
-				self.value = ((self.value << 8) & 0xFFFF00) // move old first/second to second/third
+				self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
 					| next_byte as u32; // set the first byte
 			}
 		}
@@ -529,7 +523,7 @@ impl MatchingContext {
 struct MatchingContexts {
 	last_byte: u8,
 	hash_value: usize,
-	contexts: Vec<MatchingContext>,
+	contexts: Box<[MatchingContext]>,
 }
 
 impl MatchingContexts {
@@ -537,7 +531,7 @@ impl MatchingContexts {
 		Self {
 			last_byte: 0,
 			hash_value: 0,
-			contexts: vec![MatchingContext::new(); 1 << size_log],
+			contexts: vec![MatchingContext::new(); 1 << size_log].into_boxed_slice(),
 		}
 	}
 
