@@ -3,9 +3,18 @@ name = "srx"
 version = "0.2.0"
 edition = "2021"
 
+[profile.dev]
+opt-level = 1
+
 [profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1 # slower builds but more LLVM optimizations
+
+[profile.profiling]
+inherits = "release"
 debug = true
-lto = true
+strip = "none"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
