@@ -815,7 +815,7 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
 //endregion Stream Encoder/Decoder
 // =================================================================================================
 
-const SRX_HEADER: [u8; 4] = ['s' as u8, 'R' as u8, 'x' as u8, 0];
+const SRX_HEADER: &[u8; 4] = b"sRx\x00";
 
 fn run(input_path: &Path, output_path: &Path, is_compress: bool) -> AnyResult<(u64, u64, f64)> {
     // open file
@@ -831,12 +831,12 @@ fn run(input_path: &Path, output_path: &Path, is_compress: bool) -> AnyResult<(u
 
     // do the compression/decompression
     let (mut done_reader, mut done_writer): (BufReader<File>, BufWriter<File>) = if is_compress {
-        buffered_writer.write_all(&SRX_HEADER)?;
+        buffered_writer.write_all(SRX_HEADER)?;
         StreamEncoder::new(buffered_reader, buffered_writer).encode()?
     } else {
         let mut buffer: [u8; 4] = [0; 4];
         buffered_reader.read_exact(&mut buffer)?;
-        if !buffer.eq(&SRX_HEADER) {
+        if !buffer.eq(SRX_HEADER) {
             return Err(AnyError::new("Not a SRX compressed file!"));
         }
         StreamDecoder::new(buffered_reader, buffered_writer).decode()?
