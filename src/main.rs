@@ -16,9 +16,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::basic::{AnyError, AnyResult};
 use std::cmp::min;
-use std::error::Error;
-use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
 use std::ops::{Deref, DerefMut};
@@ -28,36 +27,12 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Instant;
-use std::{env, fmt, thread};
+use std::{env, thread};
 
+mod basic;
 #[cfg(test)]
 mod tests;
 
-// =================================================================================================
-//region AnyError
-type AnyResult<T> = Result<T, AnyError>;
-
-#[derive(Debug, Clone)]
-struct AnyError(String);
-
-impl AnyError {
-    fn new(s: &str) -> Self {
-        Self(String::from(s))
-    }
-}
-
-impl Display for AnyError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        Display::fmt(&self.0, f)
-    }
-}
-
-impl<E: Error> From<E> for AnyError {
-    fn from(e: E) -> Self {
-        Self(e.to_string())
-    }
-}
-//endregion AnyError
 // =================================================================================================
 //region Secondary Context
 
