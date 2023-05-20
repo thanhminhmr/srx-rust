@@ -22,7 +22,7 @@ use crate::primary_context::history::ByteHistory;
 // -----------------------------------------------
 
 pub struct PrimaryContext<const SIZE: usize> {
-	last_byte: u8,
+	previous_byte: u8,
 	hash_value: usize,
 	contexts: Box<[ByteHistory; SIZE]>,
 }
@@ -33,27 +33,38 @@ impl<const SIZE: usize> PrimaryContext<SIZE> {
 
 	pub fn new() -> Self {
 		Self {
-			last_byte: 0,
+			previous_byte: 0,
 			hash_value: 0,
 			contexts: Box::new([ByteHistory::new(); SIZE]),
 		}
 	}
 
-	pub fn get(&self) -> (u8, u8, u8, u8, usize, usize) {
-		let (first_byte, second_byte, third_byte, count): (u8, u8, u8, usize) =
-			self.contexts[self.hash_value].get();
-		return (
-			self.last_byte,
-			first_byte,
-			second_byte,
-			third_byte,
-			count,
-			self.hash_value,
-		);
+	pub fn first_byte(&self) -> u8 {
+		self.contexts[self.hash_value].first_byte()
+	}
+
+	pub fn second_byte(&self) -> u8 {
+		self.contexts[self.hash_value].second_byte()
+	}
+
+	pub fn third_byte(&self) -> u8 {
+		self.contexts[self.hash_value].third_byte()
+	}
+
+	pub fn match_count(&self) -> usize {
+		self.contexts[self.hash_value].match_count()
+	}
+
+	pub fn previous_byte(&self) -> u8 {
+		self.previous_byte as u8
+	}
+
+	pub fn hash_value(&self) -> usize {
+		self.hash_value
 	}
 
 	fn update(&mut self, next_byte: u8) {
-		self.last_byte = next_byte;
+		self.previous_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1) % SIZE;
 		debug_assert!(self.hash_value < SIZE);
 	}

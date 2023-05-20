@@ -17,12 +17,12 @@
  */
 
 use crate::basic::{AnyError, AnyResult, Closable};
-use crate::primary_context::{ByteMatched, PrimaryContext};
-use crate::secondary_context::{Bit, BitDecoder, BitEncoder, SecondaryContext};
-use std::cmp::min;
+use crate::bridged_context::{BridgedPrimaryContext, BridgedSecondaryContext};
+use crate::primary_context::ByteMatched;
+use crate::secondary_context::{Bit, BitDecoder, BitEncoder};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::path::Path;
 use std::process::exit;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
@@ -32,17 +32,11 @@ use std::time::Instant;
 use std::{env, thread};
 
 mod basic;
+mod bridged_context;
 mod primary_context;
 mod secondary_context;
 
-// =================================================================================================
-//region Secondary Context
-
-// -------------------------------------------------------------------------------------------------
-//region Threaded Bit Encoding
-
 // -----------------------------------------------
-//region Shared Buffer
 
 const BUFFER_SIZE: usize = 0x10000;
 const BUFFER_SAFE_GUARD: usize = 0x8;
@@ -68,9 +62,7 @@ impl BufferContainer {
     }
 }
 
-//endregion Shared Buffer
 // -----------------------------------------------
-//region BufferedEncoder
 
 struct BufferedEncoder<'local> {
     buffer: BufferGuarded<'local>,
@@ -106,9 +98,7 @@ impl<'local> BufferedEncoder<'local> {
     }
 }
 
-//endregion BufferedEncoder
 // -----------------------------------------------
-//region ThreadMessage
 
 struct ThreadMessage {
     buffer: BufferContainer,
@@ -121,9 +111,7 @@ impl ThreadMessage {
     }
 }
 
-//endregion ThreadMessage
 // -----------------------------------------------
-//region ThreadedEncoder
 
 struct ThreadedEncoder<W: Write + Send + 'static> {
     buffer_which: bool,
@@ -134,7 +122,7 @@ struct ThreadedEncoder<W: Write + Send + 'static> {
 }
 
 impl<W: Write + Send + 'static> ThreadedEncoder<W> {
-    fn new(size: usize, output: W) -> Self {
+    fn new(output: W) -> Self {
         let (sender, receiver): (SyncSender<ThreadMessage>, Receiver<ThreadMessage>) =
             sync_channel(1);
         Self {
@@ -142,13 +130,13 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
             buffer_one: BufferContainer::new(),
             buffer_two: BufferContainer::new(),
             sender,
-            thread: thread::spawn(move || ThreadedEncoder::thread(size, output, receiver)),
+            thread: thread::spawn(move || ThreadedEncoder::thread(output, receiver)),
         }
     }
 
     fn bit(
         encoder: &mut BitEncoder<W>,
-        context: &mut SecondaryContext,
+        context: &mut BridgedSecondaryContext,
         context_index: usize,
         bit: usize,
     ) -> AnyResult<()> {
@@ -160,7 +148,7 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 
     fn byte(
         encoder: &mut BitEncoder<W>,
-        context: &mut SecondaryContext,
+        context: &mut BridgedSecondaryContext,
         context_index: usize,
         byte: u8,
     ) -> AnyResult<()> {
@@ -181,9 +169,9 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
         return Ok(());
     }
 
-    fn thread(size: usize, writer: W, receiver: Receiver<ThreadMessage>) -> AnyResult<W> {
+    fn thread(writer: W, receiver: Receiver<ThreadMessage>) -> AnyResult<W> {
         let mut encoder: BitEncoder<W> = BitEncoder::new(writer);
-        let mut context: SecondaryContext = SecondaryContext::new(size);
+        let mut context: BridgedSecondaryContext = BridgedSecondaryContext::new();
         loop {
             // receive message
             let message: ThreadMessage = match receiver.recv() {
@@ -242,77 +230,10 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
     }
 }
 
-//endregion ThreadedEncoder
 // -----------------------------------------------
 
-//endregion Threaded Bit Encoding
-// -------------------------------------------------------------------------------------------------
-
-//endregion Secondary Context
-// =================================================================================================
-//region Stream Encoder/Decoder
-
-// -------------------------------------------------------------------------------------------------
-//region StreamContext
-
-const PRIMARY_CONTEXT_SIZE: usize = 1 << 24;
-const SECONDARY_CONTEXT_SIZE: usize = 0x4000 * 256 + (1024 + 32) * 768;
-
-struct StreamContexts(PrimaryContext<PRIMARY_CONTEXT_SIZE>);
-
-impl Deref for StreamContexts {
-    type Target = PrimaryContext<PRIMARY_CONTEXT_SIZE>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for StreamContexts {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl StreamContexts {
-    fn new() -> Self {
-        Self(PrimaryContext::new())
-    }
-
-    fn calculate_context(&self) -> (u8, u8, u8, usize, usize, usize, usize) {
-        let (last_byte, first_byte, second_byte, third_byte, count, hash_value) = self.get();
-
-        let bit_context: usize = if count < 4 {
-            ((last_byte as usize) << 2) | count
-        } else {
-            1024 + (min(count - 4, 63) >> 1)
-        } * 768
-            + 0x4000 * 256;
-
-        let first_context: usize = bit_context + first_byte as usize;
-        let second_context: usize =
-            bit_context + 256 + second_byte.wrapping_add(third_byte) as usize;
-        let third_context: usize =
-            bit_context + 512 + second_byte.wrapping_mul(2).wrapping_sub(third_byte) as usize;
-        let literal_context: usize = (hash_value & 0x3FFF) * 256;
-
-        return (
-            first_byte,
-            second_byte,
-            third_byte,
-            first_context,
-            second_context,
-            third_context,
-            literal_context,
-        );
-    }
-}
-
-//endregion StreamEncoder
-// -------------------------------------------------------------------------------------------------
-//region StreamEncoder
-
 struct StreamEncoder<R: Read, W: Write + Send + 'static> {
-    contexts: StreamContexts,
+    context: BridgedPrimaryContext,
     encoder: ThreadedEncoder<W>,
     reader: R,
 }
@@ -320,8 +241,8 @@ struct StreamEncoder<R: Read, W: Write + Send + 'static> {
 impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
     fn new(reader: R, writer: W) -> Self {
         Self {
-            contexts: StreamContexts::new(),
-            encoder: ThreadedEncoder::new(SECONDARY_CONTEXT_SIZE, writer),
+            context: BridgedPrimaryContext::new(),
+            encoder: ThreadedEncoder::new(writer),
             reader,
         }
     }
@@ -331,22 +252,12 @@ impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
         loop {
             let mut encoder: BufferedEncoder = self.encoder.begin()?;
             loop {
-                let (
-                    first_byte,
-                    _,
-                    _,
-                    first_context,
-                    second_context,
-                    third_context,
-                    literal_context,
-                ) = self.contexts.calculate_context();
-
                 let mut byte_result: [u8; 1] = [0];
                 if self.reader.read(&mut byte_result)? == 0 {
                     // eof, encoded using first byte as literal
-                    encoder.bit(first_context, 1);
-                    encoder.bit(second_context, 0);
-                    encoder.byte(literal_context, first_byte);
+                    encoder.bit(self.context.first_context(), 1);
+                    encoder.bit(self.context.second_context(), 0);
+                    encoder.byte(self.context.literal_context(), self.context.first_byte());
 
                     self.encoder.end(encoder)?;
                     let writer: W = self.encoder.flush()?;
@@ -355,24 +266,24 @@ impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
                 }
 
                 let current_byte: u8 = byte_result[0];
-                match self.contexts.matching(current_byte) {
+                match self.context.matching(current_byte) {
                     ByteMatched::FIRST => {
-                        encoder.bit(first_context, 0);
+                        encoder.bit(self.context.first_context(), 0);
                     }
                     ByteMatched::SECOND => {
-                        encoder.bit(first_context, 1);
-                        encoder.bit(second_context, 1);
-                        encoder.bit(third_context, 0);
+                        encoder.bit(self.context.first_context(), 1);
+                        encoder.bit(self.context.second_context(), 1);
+                        encoder.bit(self.context.third_context(), 0);
                     }
                     ByteMatched::THIRD => {
-                        encoder.bit(first_context, 1);
-                        encoder.bit(second_context, 1);
-                        encoder.bit(third_context, 1);
+                        encoder.bit(self.context.first_context(), 1);
+                        encoder.bit(self.context.second_context(), 1);
+                        encoder.bit(self.context.third_context(), 1);
                     }
                     ByteMatched::NONE => {
-                        encoder.bit(first_context, 1);
-                        encoder.bit(second_context, 0);
-                        encoder.byte(literal_context, current_byte);
+                        encoder.bit(self.context.first_context(), 1);
+                        encoder.bit(self.context.second_context(), 0);
+                        encoder.byte(self.context.literal_context(), current_byte);
                     }
                 };
 
@@ -392,8 +303,8 @@ impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
 //region StreamDecoder
 
 struct StreamDecoder<R: Read, W: Write> {
-    contexts: StreamContexts,
-    secondary_context: SecondaryContext,
+    primary_context: BridgedPrimaryContext,
+    secondary_context: BridgedSecondaryContext,
     decoder: BitDecoder<R>,
     writer: W,
 }
@@ -401,8 +312,8 @@ struct StreamDecoder<R: Read, W: Write> {
 impl<R: Read, W: Write> StreamDecoder<R, W> {
     fn new(reader: R, writer: W) -> Self {
         Self {
-            contexts: StreamContexts::new(),
-            secondary_context: SecondaryContext::new(SECONDARY_CONTEXT_SIZE),
+            primary_context: BridgedPrimaryContext::new(),
+            secondary_context: BridgedSecondaryContext::new(),
             decoder: BitDecoder::new(reader),
             writer,
         }
@@ -436,37 +347,28 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
     #[inline(never)]
     fn decode(mut self) -> AnyResult<(R, W)> {
         loop {
-            let (
-                first_byte,
-                second_byte,
-                third_byte,
-                first_context,
-                second_context,
-                third_context,
-                literal_context,
-            ) = self.contexts.calculate_context();
-
-            let (next_byte, matched) = if self.bit(first_context)? == 0 {
-                // match first
-                (first_byte, ByteMatched::FIRST)
-            } else if self.bit(second_context)? == 0 {
-                // literal
-                let next_byte: u8 = self.byte(literal_context)?;
-                if next_byte == first_byte {
-                    // eof, gave the reader/writer back
-                    let reader: R = self.decoder.close()?;
-                    return Ok((reader, self.writer));
-                }
-                (next_byte, ByteMatched::NONE)
-            } else if self.bit(third_context)? == 0 {
-                // match second
-                (second_byte, ByteMatched::SECOND)
-            } else {
-                // match third
-                (third_byte, ByteMatched::THIRD)
-            };
+            let (next_byte, matched): (u8, ByteMatched) =
+                if self.bit(self.primary_context.first_context())? == 0 {
+                    // match first
+                    (self.primary_context.first_byte(), ByteMatched::FIRST)
+                } else if self.bit(self.primary_context.second_context())? == 0 {
+                    // literal
+                    let next_byte: u8 = self.byte(self.primary_context.literal_context())?;
+                    if next_byte == self.primary_context.first_byte() {
+                        // eof, gave the reader/writer back
+                        let reader: R = self.decoder.close()?;
+                        return Ok((reader, self.writer));
+                    }
+                    (next_byte, ByteMatched::NONE)
+                } else if self.bit(self.primary_context.third_context())? == 0 {
+                    // match second
+                    (self.primary_context.second_byte(), ByteMatched::SECOND)
+                } else {
+                    // match third
+                    (self.primary_context.third_byte(), ByteMatched::THIRD)
+                };
             self.writer.write_all(&[next_byte])?;
-            self.contexts.matched(next_byte, matched);
+            self.primary_context.matched(next_byte, matched);
         }
     }
 }

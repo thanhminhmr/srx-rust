@@ -19,25 +19,25 @@
 use crate::secondary_context::bit::Bit;
 use crate::secondary_context::prediction::BitPrediction;
 
-pub struct SecondaryContext {
-	context: Box<[BitPrediction]>,
+pub struct SecondaryContext<const SIZE: usize> {
+    context: Box<[BitPrediction; SIZE]>,
 }
 
-impl SecondaryContext {
-	pub fn new(size: usize) -> Self {
-		Self {
-			context: vec![BitPrediction::new(); size].into_boxed_slice(),
-		}
-	}
+impl<const SIZE: usize> SecondaryContext<SIZE> {
+    pub fn new() -> Self {
+        Self {
+            context: Box::new([BitPrediction::new(); SIZE]),
+        }
+    }
 
-	pub fn get(&self, context_index: usize) -> u32 {
-		debug_assert!(context_index < self.context.len());
-		self.context[context_index].get()
-	}
+    pub fn get(&self, context_index: usize) -> u32 {
+        debug_assert!(context_index < SIZE);
+        self.context[context_index].get()
+    }
 
-	// return current prediction and then update the prediction with new bit
-	pub fn update(&mut self, context_index: usize, bit: Bit) -> u32 {
-		debug_assert!(context_index < self.context.len());
-		self.context[context_index].update(bit)
-	}
+    // return current prediction and then update the prediction with new bit
+    pub fn update(&mut self, context_index: usize, bit: Bit) -> u32 {
+        debug_assert!(context_index < SIZE);
+        self.context[context_index].update(bit)
+    }
 }

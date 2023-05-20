@@ -36,7 +36,7 @@ pub const MULTIPLIER: [u32; 256] = {
 // -----------------------------------------------
 
 // lower 8-bit is a counter, higher 24-bit is prediction
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct BitPrediction(u32);
 
 impl BitPrediction {
