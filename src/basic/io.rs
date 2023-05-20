@@ -21,5 +21,41 @@ use crate::basic::AnyResult;
 // -----------------------------------------------
 
 pub trait Closable<T> {
-    fn close(self) -> AnyResult<T>;
+	fn close(self) -> AnyResult<T>;
+}
+
+// -----------------------------------------------
+
+pub trait Reader<T> {
+	fn read(&mut self) -> AnyResult<Option<T>>;
+}
+
+// -----------------------------------------------
+
+pub trait Writer<T> {
+	fn write(&mut self, value: T) -> AnyResult<()>;
+}
+
+// -----------------------------------------------
+
+pub trait Consumer<T> {
+	fn consume(&mut self, buffer: &[T]) -> AnyResult<usize>;
+}
+
+// -----------------------------------------------
+
+pub trait Producer<T> {
+	fn produce(&mut self, buffer: &mut [T]) -> AnyResult<usize>;
+}
+
+// -----------------------------------------------
+
+pub trait ToConsumer<T> {
+	fn consume<C: Consumer<T>>(&mut self, consumer: &mut C) -> AnyResult<usize>;
+}
+
+// -----------------------------------------------
+
+pub trait FromProducer<T> {
+	fn produce<P: Producer<T>>(&mut self, producer: &mut P) -> AnyResult<usize>;
 }

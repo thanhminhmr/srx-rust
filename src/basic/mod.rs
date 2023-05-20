@@ -18,6 +18,8 @@
 
 mod error;
 mod io;
+mod pipe;
 
-pub use self::error::*;
-pub use self::io::*;
+pub use self::error::{AnyError, AnyResult};
+pub use self::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
+pub use self::pipe::{pipe, PipedReader, PipedWriter};
