@@ -17,6 +17,7 @@
  */
 
 use crate::basic::{AnyError, AnyResult, Closable};
+use crate::primary_context::{ByteMatched, PrimaryContext};
 use crate::secondary_context::{Bit, BitDecoder, BitEncoder, SecondaryContext};
 use std::cmp::min;
 use std::fs::File;
@@ -31,6 +32,7 @@ use std::time::Instant;
 use std::{env, thread};
 
 mod basic;
+mod primary_context;
 mod secondary_context;
 
 // =================================================================================================
@@ -248,160 +250,18 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
 
 //endregion Secondary Context
 // =================================================================================================
-//region Symbol Ranking
-
-// -------------------------------------------------------------------------------------------------
-//region Matching Context
-
-enum ByteMatched {
-    FIRST,
-    SECOND,
-    THIRD,
-    NONE,
-}
-
-#[derive(Clone)]
-struct MatchingContext(u32);
-
-impl MatchingContext {
-    fn new() -> Self {
-        Self(0)
-    }
-
-    fn get(&self) -> (u8, u8, u8, usize) {
-        (
-            self.0 as u8,            // first byte
-            (self.0 >> 8) as u8,     // second byte
-            (self.0 >> 16) as u8,    // third byte
-            (self.0 >> 24) as usize, // count
-        )
-    }
-
-    fn matching(&mut self, next_byte: u8) -> ByteMatched {
-        let mask: u32 = self.0 ^ (0x10101 * next_byte as u32);
-        return if (mask & 0x0000FF) == 0 {
-            // mask for the first byte
-            // increase count by 1, capped at 255
-            self.0 += if self.0 < 0xFF000000 { 0x01000000 } else { 0 };
-
-            ByteMatched::FIRST
-        } else if (mask & 0x00FF00) == 0 {
-            // mask for the second byte
-            self.0 = (self.0 & 0xFF0000) // keep the third byte
-				| ((self.0 << 8) & 0xFF00) // bring the old first byte to second place
-				| next_byte as u32 // set the first byte
-				| 0x1000000; // set count to 1
-
-            ByteMatched::SECOND
-        } else if (mask & 0xFF0000) == 0 {
-            // mask for the third byte
-            self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
-				| next_byte as u32 // set the first byte
-				| 0x1000000; // set count to 1
-
-            ByteMatched::THIRD
-        } else {
-            // not match
-            self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
-				| next_byte as u32; // set the first byte
-
-            ByteMatched::NONE
-        };
-    }
-
-    fn matched(&mut self, next_byte: u8, matched: ByteMatched) {
-        match matched {
-            ByteMatched::FIRST => {
-                // first byte
-                // increase count by 1, capped at 255
-                self.0 += if self.0 < 0xFF000000 { 0x01000000 } else { 0 };
-            }
-            ByteMatched::SECOND => {
-                // second byte
-                self.0 = (self.0 & 0xFF0000) // keep the third byte
-					| ((self.0 << 8) & 0xFF00) // bring the old first byte to second place
-					| next_byte as u32 // set the first byte
-					| 0x1000000; // set count to 1
-            }
-            ByteMatched::THIRD => {
-                // third byte
-                self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
-					| next_byte as u32 // set the first byte
-					| 0x1000000; // set count to 1
-            }
-            ByteMatched::NONE => {
-                // not match
-                self.0 = ((self.0 << 8) & 0xFFFF00) // move old first/second to second/third
-					| next_byte as u32; // set the first byte
-            }
-        }
-    }
-}
-
-// endregion Matching Context
-// -------------------------------------------------------------------------------------------------
-//region Matching Contexts
-
-struct MatchingContexts {
-    last_byte: u8,
-    hash_value: usize,
-    contexts: Box<[MatchingContext]>,
-}
-
-impl MatchingContexts {
-    fn new(size_log: usize) -> Self {
-        Self {
-            last_byte: 0,
-            hash_value: 0,
-            contexts: vec![MatchingContext::new(); 1 << size_log].into_boxed_slice(),
-        }
-    }
-
-    fn get_last_byte(&self) -> u8 {
-        self.last_byte
-    }
-    fn get_hash_value(&self) -> usize {
-        self.hash_value
-    }
-    fn get_context(&self) -> &MatchingContext {
-        &self.contexts[self.hash_value]
-    }
-
-    fn matching(&mut self, next_byte: u8) -> ByteMatched {
-        let matching_byte: ByteMatched = self.contexts[self.hash_value].matching(next_byte);
-        self.last_byte = next_byte;
-        self.hash_value =
-            (self.hash_value * (5 << 5) + next_byte as usize + 1) & (self.contexts.len() - 1);
-        debug_assert!(self.hash_value < self.contexts.len());
-        return matching_byte;
-    }
-
-    fn matched(&mut self, next_byte: u8, matched: ByteMatched) {
-        self.contexts[self.hash_value].matched(next_byte, matched);
-        self.last_byte = next_byte;
-        self.hash_value =
-            (self.hash_value * (5 << 5) + next_byte as usize + 1) & (self.contexts.len() - 1);
-        debug_assert!(self.hash_value < self.contexts.len());
-    }
-}
-
-// endregion Matching Contexts
-// -------------------------------------------------------------------------------------------------
-
-//endregion Symbol Ranking
-// =================================================================================================
 //region Stream Encoder/Decoder
 
 // -------------------------------------------------------------------------------------------------
 //region StreamContext
 
-const PRIMARY_CONTEXT_SIZE_LOG: usize = 24;
-const SECONDARY_CONTEXT_SIZE: usize = (1024 + 32) * 768 + 0x400000;
+const PRIMARY_CONTEXT_SIZE: usize = 1 << 24;
+const SECONDARY_CONTEXT_SIZE: usize = 0x4000 * 256 + (1024 + 32) * 768;
 
-struct StreamContexts(MatchingContexts);
+struct StreamContexts(PrimaryContext<PRIMARY_CONTEXT_SIZE>);
 
 impl Deref for StreamContexts {
-    type Target = MatchingContexts;
+    type Target = PrimaryContext<PRIMARY_CONTEXT_SIZE>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -415,25 +275,25 @@ impl DerefMut for StreamContexts {
 
 impl StreamContexts {
     fn new() -> Self {
-        Self(MatchingContexts::new(PRIMARY_CONTEXT_SIZE_LOG))
+        Self(PrimaryContext::new())
     }
 
     fn calculate_context(&self) -> (u8, u8, u8, usize, usize, usize, usize) {
-        let (first_byte, second_byte, third_byte, count) = self.get_context().get();
+        let (last_byte, first_byte, second_byte, third_byte, count, hash_value) = self.get();
 
         let bit_context: usize = if count < 4 {
-            ((self.get_last_byte() as usize) << 2) | count
+            ((last_byte as usize) << 2) | count
         } else {
             1024 + (min(count - 4, 63) >> 1)
         } * 768
-            + 0x400000;
+            + 0x4000 * 256;
 
         let first_context: usize = bit_context + first_byte as usize;
         let second_context: usize =
             bit_context + 256 + second_byte.wrapping_add(third_byte) as usize;
         let third_context: usize =
             bit_context + 512 + second_byte.wrapping_mul(2).wrapping_sub(third_byte) as usize;
-        let literal_context: usize = (self.get_hash_value() & 0x3FFF) * 256;
+        let literal_context: usize = (hash_value & 0x3FFF) * 256;
 
         return (
             first_byte,
