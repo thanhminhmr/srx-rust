@@ -16,8 +16,10 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-mod error;
-mod io;
+use crate::basic::AnyResult;
 
-pub use self::error::*;
-pub use self::io::*;
+// -----------------------------------------------
+
+pub trait Closable<T> {
+    fn close(self) -> AnyResult<T>;
+}

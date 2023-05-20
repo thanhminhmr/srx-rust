@@ -16,8 +16,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-mod error;
-mod io;
-
-pub use self::error::*;
-pub use self::io::*;
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub enum Bit {
+    Zero,
+    One,
+}

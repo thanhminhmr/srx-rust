@@ -16,8 +16,28 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-mod error;
-mod io;
+use crate::secondary_context::bit::Bit;
+use crate::secondary_context::prediction::BitPrediction;
 
-pub use self::error::*;
-pub use self::io::*;
+pub struct SecondaryContext {
+	context: Box<[BitPrediction]>,
+}
+
+impl SecondaryContext {
+	pub fn new(size: usize) -> Self {
+		Self {
+			context: vec![BitPrediction::new(); size].into_boxed_slice(),
+		}
+	}
+
+	pub fn get(&self, context_index: usize) -> u32 {
+		debug_assert!(context_index < self.context.len());
+		self.context[context_index].get()
+	}
+
+	// return current prediction and then update the prediction with new bit
+	pub fn update(&mut self, context_index: usize, bit: Bit) -> u32 {
+		debug_assert!(context_index < self.context.len());
+		self.context[context_index].update(bit)
+	}
+}

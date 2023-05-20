@@ -1,3 +1,5 @@
+use crate::secondary_context::prediction::MULTIPLIER;
+
 #[test]
 fn multiplier_table_macro_test() {
     let truth: [u32; 256] = [
@@ -34,5 +36,5 @@ fn multiplier_table_macro_test() {
         0x010ECF57, 0x010DB20B, 0x010C9715, 0x010B7E6F, 0x010A6811, 0x010953F4, 0x01084211, 0x01073261,
         0x010624DD, 0x0105197F, 0x01041041, 0x0103091B, 0x01020408, 0x01010101, 0x01000000, 0x00FF00FF,
     ];
-    assert_eq!(crate::MULTIPLIER, truth);
+    assert_eq!(MULTIPLIER, truth);
 }

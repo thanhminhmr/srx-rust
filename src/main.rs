@@ -16,7 +16,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::{AnyError, AnyResult};
+use crate::basic::{AnyError, AnyResult, Closable};
+use crate::secondary_context::{Bit, BitDecoder, BitEncoder, SecondaryContext};
 use std::cmp::min;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
@@ -30,227 +31,10 @@ use std::time::Instant;
 use std::{env, thread};
 
 mod basic;
-#[cfg(test)]
-mod tests;
+mod secondary_context;
 
 // =================================================================================================
 //region Secondary Context
-
-// -------------------------------------------------------------------------------------------------
-//region Direct Bit Encoding/Decoding
-
-// -----------------------------------------------
-// region BitPrediction
-
-// MULTIPLIER[i] == 0x1_0000_0000 / (i + 2) but rounded
-const MULTIPLIER: [u32; 256] = {
-    // const-for loops not yet supported
-    let mut table = [0; 256];
-    let mut i: usize = 0;
-    while i < 256 {
-        let div = (1 << 33) / (i as u64 + 2);
-        table[i] = ((div >> 1) + (div & 1)) as u32; // rounding
-        i += 1;
-    }
-    table
-};
-
-// lower 8-bit is a counter, higher 24-bit is prediction
-#[derive(Clone)]
-struct BitPrediction(u32);
-
-impl BitPrediction {
-    fn new() -> Self {
-        Self(0x80000000)
-    }
-
-    fn get_prediction(&self) -> u32 {
-        self.0 & 0xFFFFFF00
-    }
-
-    // return current prediction and then update the prediction with new bit
-    fn update(&mut self, bit: usize) -> u32 {
-        debug_assert!(bit == 0 || bit == 1);
-        // get bit 0-7 as count
-        let count: usize = (self.0 & 0xFF) as usize;
-        // masking bit 8-31 as old prediction
-        let old_prediction: u32 = self.0 & 0xFFFFFF00;
-        // create bit shift
-        let bit_shift: i64 = (bit as i64) << 32;
-        // get multiplier
-        let multiplier: i64 = MULTIPLIER[count] as i64;
-        // calculate new prediction
-        let new_prediction: u32 = (((bit_shift - old_prediction as i64) * multiplier) >> 32) as u32;
-        // update state
-        self.0 = self
-            .0
-            .wrapping_add((new_prediction & 0xFFFFFF00) + if count < 255 { 1 } else { 0 });
-        // return old prediction (before update)
-        return old_prediction;
-    }
-}
-
-//endregion BitPrediction
-// -----------------------------------------------
-//region BitEncoder
-
-struct BitEncoder<W: Write> {
-    low: u32,
-    high: u32,
-    states: Box<[BitPrediction]>,
-    writer: W,
-}
-
-impl<W: Write> BitEncoder<W> {
-    fn new(size: usize, writer: W) -> Self {
-        Self {
-            low: 0,
-            high: 0xFFFFFFFF,
-            states: vec![BitPrediction::new(); size].into_boxed_slice(),
-            writer,
-        }
-    }
-
-    fn bit(&mut self, context: usize, bit: usize) -> AnyResult<()> {
-        // checking
-        debug_assert!(self.low < self.high);
-        debug_assert!(context < self.states.len());
-        debug_assert!(bit == 0 || bit == 1);
-        // get prediction
-        let prediction: u32 = self.states[context].update(bit);
-        // get delta
-        let delta: u32 = (((self.high - self.low) as u64 * prediction as u64) >> 32) as u32;
-        // calculate middle
-        let middle: u32 = self.low + delta;
-        debug_assert!(self.low <= middle && middle < self.high);
-        // set new range limit
-        *(if bit != 0 {
-            &mut self.high
-        } else {
-            &mut self.low
-        }) = middle + (bit ^ 1) as u32;
-        // shift bits out
-        while (self.high ^ self.low) & 0xFF000000 == 0 {
-            // write byte
-            self.writer.write_all(&[(self.low >> 24) as u8])?;
-            // shift new bits into high/low
-            self.low = self.low << 8;
-            self.high = (self.high << 8) | 0xFF;
-        }
-        // oke
-        return Ok(());
-    }
-
-    fn byte(&mut self, context: usize, byte: u8) -> AnyResult<()> {
-        // code high 4 bits in first 15 contexts
-        let high: usize = ((byte >> 4) | 16) as usize;
-        self.bit(context + 1, high >> 3 & 1)?;
-        self.bit(context + (high >> 3), high >> 2 & 1)?;
-        self.bit(context + (high >> 2), high >> 1 & 1)?;
-        self.bit(context + (high >> 1), high & 1)?;
-        // code low 4 bits in one of 16 blocks of 15 contexts (to reduce cache misses)
-        let low_context: usize = context + (15 * (high - 15)) as usize;
-        let low: usize = ((byte & 15) | 16) as usize;
-        self.bit(low_context + 1, low >> 3 & 1)?;
-        self.bit(low_context + (low >> 3), low >> 2 & 1)?;
-        self.bit(low_context + (low >> 2), low >> 1 & 1)?;
-        self.bit(low_context + (low >> 1), low & 1)?;
-        // oke
-        return Ok(());
-    }
-
-    fn flush(mut self) -> AnyResult<W> {
-        // write then get out
-        self.writer.write_all(&[(self.low >> 24) as u8])?;
-        // oke, give back the writer
-        Ok(self.writer)
-    }
-}
-
-//endregion BitEncoder
-// -----------------------------------------------
-//region BitDecoder
-
-struct BitDecoder<R: Read> {
-    value: u32,
-    low: u32,
-    high: u32,
-    states: Box<[BitPrediction]>,
-    reader: R,
-}
-
-impl<R: Read> BitDecoder<R> {
-    fn new(size: usize, reader: R) -> Self {
-        Self {
-            value: 0,
-            low: 0,
-            high: 0,
-            states: vec![BitPrediction::new(); size].into_boxed_slice(),
-            reader,
-        }
-    }
-
-    fn bit(&mut self, context: usize) -> AnyResult<usize> {
-        // shift bits in
-        while (self.high ^ self.low) & 0xFF000000 == 0 {
-            // read byte
-            let mut byte: [u8; 1] = [0];
-            let read: usize = self.reader.read(&mut byte)?;
-            // shift new bits into high/low/value
-            self.value = (self.value << 8) | if read > 0 { byte[0] as u32 } else { 0xFF };
-            self.low = self.low << 8;
-            self.high = (self.high << 8) | 0xFF;
-        }
-        // checking
-        debug_assert!(context < self.states.len());
-        debug_assert!(self.low < self.high);
-        // get prediction
-        let bit_prediction: &mut BitPrediction = &mut self.states[context];
-        let prediction: u32 = bit_prediction.get_prediction();
-        // get delta
-        let delta: u32 = (((self.high - self.low) as u64 * prediction as u64) >> 32) as u32;
-        // calculate middle
-        let middle: u32 = self.low + delta;
-        debug_assert!(self.low <= middle && middle < self.high);
-        // calculate bit
-        let bit: usize = if self.value <= middle { 1 } else { 0 };
-        // update high/low
-        *(if bit != 0 {
-            &mut self.high
-        } else {
-            &mut self.low
-        }) = middle + (bit ^ 1) as u32;
-        // update bit prediction
-        bit_prediction.update(bit);
-        // return the value
-        return Ok(bit);
-    }
-
-    fn byte(&mut self, context: usize) -> AnyResult<u8> {
-        let mut high: usize = 1;
-        high += high + self.bit(context + high)?;
-        high += high + self.bit(context + high)?;
-        high += high + self.bit(context + high)?;
-        high += high + self.bit(context + high)?;
-        let low_context: usize = context + (15 * (high - 15)) as usize;
-        let mut low: usize = 1;
-        low += low + self.bit(low_context + low)?;
-        low += low + self.bit(low_context + low)?;
-        low += low + self.bit(low_context + low)?;
-        low += low + self.bit(low_context + low)?;
-        return Ok((((high - 16) << 4) | (low - 16)) as u8);
-    }
-
-    fn flush(self) -> R {
-        self.reader
-    }
-}
-
-//endregion BitDecoder
-// -----------------------------------------------
-
-//endregion Direct Bit Encoding/Decoding
-// -------------------------------------------------------------------------------------------------
 
 // -------------------------------------------------------------------------------------------------
 //region Threaded Bit Encoding
@@ -360,8 +144,44 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
         }
     }
 
+    fn bit(
+        encoder: &mut BitEncoder<W>,
+        context: &mut SecondaryContext,
+        context_index: usize,
+        bit: usize,
+    ) -> AnyResult<()> {
+        debug_assert!(bit == 0 || bit == 1);
+        let bit_enum: Bit = if bit == 0 { Bit::Zero } else { Bit::One };
+        let prediction = context.update(context_index, bit_enum);
+        encoder.bit(prediction, bit_enum)
+    }
+
+    fn byte(
+        encoder: &mut BitEncoder<W>,
+        context: &mut SecondaryContext,
+        context_index: usize,
+        byte: u8,
+    ) -> AnyResult<()> {
+        // code high 4 bits in first 15 contexts
+        let high: usize = ((byte >> 4) | 16) as usize;
+        Self::bit(encoder, context, context_index + 1, high >> 3 & 1)?;
+        Self::bit(encoder, context, context_index + (high >> 3), high >> 2 & 1)?;
+        Self::bit(encoder, context, context_index + (high >> 2), high >> 1 & 1)?;
+        Self::bit(encoder, context, context_index + (high >> 1), high & 1)?;
+        // code low 4 bits in one of 16 blocks of 15 contexts (to reduce cache misses)
+        let low_context: usize = context_index + (15 * (high - 15)) as usize;
+        let low: usize = ((byte & 15) | 16) as usize;
+        Self::bit(encoder, context, low_context + 1, low >> 3 & 1)?;
+        Self::bit(encoder, context, low_context + (low >> 3), low >> 2 & 1)?;
+        Self::bit(encoder, context, low_context + (low >> 2), low >> 1 & 1)?;
+        Self::bit(encoder, context, low_context + (low >> 1), low & 1)?;
+        // oke
+        return Ok(());
+    }
+
     fn thread(size: usize, writer: W, receiver: Receiver<ThreadMessage>) -> AnyResult<W> {
-        let mut encoder: BitEncoder<W> = BitEncoder::new(size, writer);
+        let mut encoder: BitEncoder<W> = BitEncoder::new(writer);
+        let mut context: SecondaryContext = SecondaryContext::new(size);
         loop {
             // receive message
             let message: ThreadMessage = match receiver.recv() {
@@ -379,13 +199,13 @@ impl<W: Write + Send + 'static> ThreadedEncoder<W> {
             for i in 0..message.count {
                 let value: usize = buffer[i] as usize;
                 if value & 0x100 == 0 {
-                    encoder.bit(value >> 9, value & 1)?;
+                    Self::bit(&mut encoder, &mut context, value >> 9, value & 1)?;
                 } else {
-                    encoder.byte(value >> 9, (value & 0xFF) as u8)?;
+                    Self::byte(&mut encoder, &mut context, value >> 9, (value & 0xFF) as u8)?;
                 }
             }
         }
-        return encoder.flush();
+        return encoder.close();
     }
 
     fn buffer(&self) -> &BufferContainer {
@@ -713,6 +533,7 @@ impl<R: Read, W: Write + Send + 'static> StreamEncoder<R, W> {
 
 struct StreamDecoder<R: Read, W: Write> {
     contexts: StreamContexts,
+    secondary_context: SecondaryContext,
     decoder: BitDecoder<R>,
     writer: W,
 }
@@ -721,9 +542,35 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
     fn new(reader: R, writer: W) -> Self {
         Self {
             contexts: StreamContexts::new(),
-            decoder: BitDecoder::new(SECONDARY_CONTEXT_SIZE, reader),
+            secondary_context: SecondaryContext::new(SECONDARY_CONTEXT_SIZE),
+            decoder: BitDecoder::new(reader),
             writer,
         }
+    }
+
+    fn bit(&mut self, context_index: usize) -> AnyResult<usize> {
+        let prediction: u32 = self.secondary_context.get(context_index);
+        let bit: Bit = self.decoder.bit(prediction)?;
+        self.secondary_context.update(context_index, bit);
+        Ok(match bit {
+            Bit::Zero => 0,
+            Bit::One => 1,
+        })
+    }
+
+    fn byte(&mut self, context_index: usize) -> AnyResult<u8> {
+        let mut high: usize = 1;
+        high += high + self.bit(context_index + high)?;
+        high += high + self.bit(context_index + high)?;
+        high += high + self.bit(context_index + high)?;
+        high += high + self.bit(context_index + high)?;
+        let low_context: usize = context_index + (15 * (high - 15)) as usize;
+        let mut low: usize = 1;
+        low += low + self.bit(low_context + low)?;
+        low += low + self.bit(low_context + low)?;
+        low += low + self.bit(low_context + low)?;
+        low += low + self.bit(low_context + low)?;
+        return Ok((((high - 16) << 4) | (low - 16)) as u8);
     }
 
     #[inline(never)]
@@ -739,19 +586,19 @@ impl<R: Read, W: Write> StreamDecoder<R, W> {
                 literal_context,
             ) = self.contexts.calculate_context();
 
-            let (next_byte, matched) = if self.decoder.bit(first_context)? == 0 {
+            let (next_byte, matched) = if self.bit(first_context)? == 0 {
                 // match first
                 (first_byte, ByteMatched::FIRST)
-            } else if self.decoder.bit(second_context)? == 0 {
+            } else if self.bit(second_context)? == 0 {
                 // literal
-                let next_byte: u8 = self.decoder.byte(literal_context)?;
+                let next_byte: u8 = self.byte(literal_context)?;
                 if next_byte == first_byte {
                     // eof, gave the reader/writer back
-                    let reader: R = self.decoder.flush();
+                    let reader: R = self.decoder.close()?;
                     return Ok((reader, self.writer));
                 }
                 (next_byte, ByteMatched::NONE)
-            } else if self.decoder.bit(third_context)? == 0 {
+            } else if self.bit(third_context)? == 0 {
                 // match second
                 (second_byte, ByteMatched::SECOND)
             } else {

@@ -16,8 +16,16 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-mod error;
-mod io;
+mod bit;
+mod context;
+mod decoder;
+mod encoder;
+mod prediction;
+#[cfg(test)]
+mod tests;
 
-pub use self::error::*;
-pub use self::io::*;
+pub use self::bit::Bit;
+pub use self::context::SecondaryContext;
+pub use self::decoder::BitDecoder;
+pub use self::encoder::BitEncoder;
+pub use self::prediction::BitPrediction;
