@@ -16,43 +16,9 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
-pub enum Bit {
-    Zero,
-    One,
-}
+mod decoder;
+mod encoder;
+mod shared;
 
-impl From<Bit> for bool {
-    fn from(value: Bit) -> Self {
-        match value {
-            Bit::Zero => false,
-            Bit::One => true,
-        }
-    }
-}
-
-impl From<bool> for Bit {
-    fn from(value: bool) -> Self {
-        match value {
-            false => Bit::Zero,
-            true => Bit::One,
-        }
-    }
-}
-
-macro_rules! impl_from_for_bit {
-    ($($t:ty),*) => {
-        $(
-            impl From<Bit> for $t {
-				fn from(value: Bit) -> Self {
-					match value {
-						Bit::Zero => 0,
-						Bit::One => 1,
-					}
-				}
-            }
-        )*
-    };
-}
-
-impl_from_for_bit!(i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize);
+pub use self::decoder::decode;
+pub use self::encoder::encode;

@@ -16,22 +16,20 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::{AnyResult, Closable};
+use crate::basic::{AnyResult, Closable, PipedReader, Reader};
 use crate::secondary_context::bit::Bit;
-use std::array::from_mut;
-use std::io::Read;
 
 // -----------------------------------------------
 
-pub struct BitDecoder<R: Read> {
+pub struct BitDecoder<const SIZE: usize> {
     value: u32,
     low: u32,
     high: u32,
-    reader: R,
+    reader: PipedReader<u8, SIZE>,
 }
 
-impl<R: Read> BitDecoder<R> {
-    pub fn new(reader: R) -> Self {
+impl<const SIZE: usize> BitDecoder<SIZE> {
+    pub fn new(reader: PipedReader<u8, SIZE>) -> Self {
         Self {
             value: 0,
             low: 0,
@@ -43,11 +41,10 @@ impl<R: Read> BitDecoder<R> {
     pub fn bit(&mut self, prediction: u32) -> AnyResult<Bit> {
         // shift bits in
         while (self.high ^ self.low) < 0x01000000 {
-            // read byte
-            let mut byte: u8 = 0;
-            let read: usize = self.reader.read(from_mut(&mut byte))?;
-            // shift new bits into high/low/value
-            self.value = (self.value << 8) | if read > 0 { byte as u32 } else { 0xFF };
+            self.value = (self.value << 8) | match self.reader.read()? {
+                None => 0xFF,
+                Some(byte) => byte as u32,
+            };
             self.low = self.low << 8;
             self.high = (self.high << 8) | 0xFF;
         }
@@ -78,8 +75,8 @@ impl<R: Read> BitDecoder<R> {
     }
 }
 
-impl<R: Read> Closable<R> for BitDecoder<R> {
-    fn close(self) -> AnyResult<R> {
-        Ok(self.reader)
+impl<const SIZE: usize> Closable<()> for BitDecoder<SIZE> {
+    fn close(self) -> AnyResult<()> {
+        self.reader.close()
     }
 }

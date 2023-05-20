@@ -16,20 +16,19 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::{AnyResult, Closable};
+use crate::basic::{AnyResult, Closable, PipedWriter, Writer};
 use crate::secondary_context::bit::Bit;
-use std::io::Write;
 
 // -----------------------------------------------
 
-pub struct BitEncoder<W: Write> {
+pub struct BitEncoder<const SIZE: usize> {
     low: u32,
     high: u32,
-    writer: W,
+    writer: PipedWriter<u8, SIZE>,
 }
 
-impl<W: Write> BitEncoder<W> {
-    pub fn new(writer: W) -> Self {
+impl<const SIZE: usize> BitEncoder<SIZE> {
+    pub fn new(writer: PipedWriter<u8, SIZE>) -> Self {
         Self {
             low: 0,
             high: 0xFFFFFFFF,
@@ -57,7 +56,7 @@ impl<W: Write> BitEncoder<W> {
         // shift bits out
         while (self.high ^ self.low) < 0x01000000 {
             // write byte
-            self.writer.write_all(&[(self.low >> 24) as u8])?;
+            self.writer.write((self.low >> 24) as u8)?;
             // shift new bits into high/low
             self.low = self.low << 8;
             self.high = (self.high << 8) | 0xFF;
@@ -67,11 +66,11 @@ impl<W: Write> BitEncoder<W> {
     }
 }
 
-impl<W: Write> Closable<W> for BitEncoder<W> {
-    fn close(mut self) -> AnyResult<W> {
+impl<const SIZE: usize> Closable<()> for BitEncoder<SIZE> {
+    fn close(mut self) -> AnyResult<()> {
         // write byte
-        self.writer.write_all(&[(self.low >> 24) as u8])?;
+        self.writer.write((self.low >> 24) as u8)?;
         // return the writer
-        Ok(self.writer)
+        self.writer.close()
     }
 }
