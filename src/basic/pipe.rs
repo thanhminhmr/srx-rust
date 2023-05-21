@@ -34,11 +34,11 @@ pub fn pipe<T: Copy + Send + 'static, const SIZE: usize>(
     let (writer_sender, reader_receiver): (
         SyncSender<WriterToReader<T, SIZE>>,
         Receiver<WriterToReader<T, SIZE>>,
-    ) = sync_channel(0);
+    ) = sync_channel(1);
     let (reader_sender, writer_receiver): (
         SyncSender<ReaderToWriter<T, SIZE>>,
         Receiver<ReaderToWriter<T, SIZE>>,
-    ) = sync_channel(0);
+    ) = sync_channel(1);
     (
         PipedWriter {
             sender: writer_sender,
@@ -81,7 +81,7 @@ impl<T: Copy + Send + 'static, const SIZE: usize> PipedWriter<T, SIZE> {
 impl<T: Copy + Send + 'static, const SIZE: usize> Writer<T> for PipedWriter<T, SIZE> {
     fn write(&mut self, value: T) -> AnyResult<()> {
         match &mut self.buffer {
-            None => Err(AnyError::new("Broken pipe!")),
+            None => Err(AnyError::from_string("Broken pipe!")),
             Some(buffer) => {
                 debug_assert!(self.index < SIZE);
                 buffer[self.index] = value;
@@ -100,7 +100,7 @@ impl<T: Copy + Send + 'static, const SIZE: usize> Writer<T> for PipedWriter<T, S
 impl<T: Copy + Send + 'static, const SIZE: usize> FromProducer<T> for PipedWriter<T, SIZE> {
     fn produce<P: Producer<T>>(&mut self, producer: &mut P) -> AnyResult<usize> {
         match &mut self.buffer {
-            None => Err(AnyError::new("Broken pipe!")),
+            None => Err(AnyError::from_string("Broken pipe!")),
             Some(buffer) => {
                 debug_assert!(self.index < SIZE);
                 let sliced_buffer: &mut [T] = &mut buffer[self.index..SIZE];
@@ -190,7 +190,7 @@ impl<T: Copy + Send + 'static, const SIZE: usize> ToConsumer<T> for PipedReader<
                     debug_assert!(self.index <= SIZE);
                     Ok(consumed_length)
                 } else {
-                    Err(AnyError::new(
+                    Err(AnyError::from_string(
                         "Consumed length is greater than available lenght!",
                     ))
                 }

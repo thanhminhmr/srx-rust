@@ -66,15 +66,15 @@ pub fn run_file_writer<W: Write, const IO_BUFFER_SIZE: usize>(
 
 // -----------------------------------------------
 
-pub fn thread_join<T>(thread_handle: ScopedJoinHandle<T>) -> AnyResult<T> {
+pub fn thread_join<T>(thread_handle: ScopedJoinHandle<AnyResult<T>>) -> AnyResult<T> {
 	match thread_handle.join() {
-		Ok(value) => Ok(value),
-		Err(err) => match err.downcast_ref::<String>() {
-			Some(string) => Err(AnyError::new(string)),
-			None => Err(AnyError::new(match err.downcast_ref::<&'static str>() {
-				Some(&string) => string,
-				None => "Thread join failed!",
-			})),
-		},
+		Ok(value) => Ok(value?),
+		Err(error) => Err(match error.downcast_ref::<String>() {
+			Some(string) => AnyError::from_string(string),
+			None => match error.downcast_ref::<&'static str>() {
+				Some(&string) => AnyError::from_string(string),
+				None => AnyError::from_box(error),
+			},
+		}),
 	}
 }

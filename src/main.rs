@@ -56,7 +56,7 @@ fn run(input_path: &Path, output_path: &Path, is_compress: bool) -> AnyResult<(u
         let mut buffer: [u8; 4] = [0; 4];
         reader.read_exact(&mut buffer)?;
         if !buffer.eq(SRX_HEADER) {
-            return Err(AnyError::new("Not a SRX compressed file!"));
+            return Err(AnyError::from_string("Not a SRX compressed file!"));
         }
         decode::<File, File, IO_BUFFER_SIZE>(reader, writer)?
     };

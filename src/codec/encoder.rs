@@ -192,10 +192,10 @@ pub fn encode<
             scope.spawn(|| run_secondary_context_encoder(message_reader, output_writer));
         let file_writer: ScopedJoinHandle<AnyResult<W>> =
             scope.spawn(|| run_file_writer(output_reader, writer));
-        let returned_reader: R = thread_join(file_reader)??;
-        thread_join(primary_context_encoder)??;
-        thread_join(secondary_context_encoder)??;
-        let returned_writer: W = thread_join(file_writer)??;
+        let returned_reader: R = thread_join(file_reader)?;
+        thread_join(primary_context_encoder)?;
+        thread_join(secondary_context_encoder)?;
+        let returned_writer: W = thread_join(file_writer)?;
         Ok((returned_reader, returned_writer))
     })
 }

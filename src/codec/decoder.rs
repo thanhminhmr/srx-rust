@@ -127,9 +127,9 @@ pub fn decode<R: Read + Send, W: Write + Send, const IO_BUFFER_SIZE: usize>(
             scope.spawn(|| run_combined_context_decoder(input_reader, output_writer));
         let file_writer: ScopedJoinHandle<AnyResult<W>> =
             scope.spawn(|| run_file_writer(output_reader, writer));
-        let returned_reader: R = thread_join(file_reader)??;
-        thread_join(combined_context_decoder)??;
-        let returned_writer: W = thread_join(file_writer)??;
+        let returned_reader: R = thread_join(file_reader)?;
+        thread_join(combined_context_decoder)?;
+        let returned_writer: W = thread_join(file_writer)?;
         Ok((returned_reader, returned_writer))
     })
 }
