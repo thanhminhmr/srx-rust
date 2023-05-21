@@ -16,6 +16,7 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::basic::Buffer;
 use crate::primary_context::matched::ByteMatched;
 use crate::primary_context::history::ByteHistory;
 
@@ -24,7 +25,7 @@ use crate::primary_context::history::ByteHistory;
 pub struct PrimaryContext<const SIZE: usize> {
 	previous_byte: u8,
 	hash_value: usize,
-	contexts: Box<[ByteHistory; SIZE]>,
+	context: Buffer<ByteHistory, SIZE>,
 }
 
 impl<const SIZE: usize> PrimaryContext<SIZE> {
@@ -35,24 +36,24 @@ impl<const SIZE: usize> PrimaryContext<SIZE> {
 		Self {
 			previous_byte: 0,
 			hash_value: 0,
-			contexts: Box::new([ByteHistory::new(); SIZE]),
+			context: Buffer::new(ByteHistory::new()),
 		}
 	}
 
 	pub fn first_byte(&self) -> u8 {
-		self.contexts[self.hash_value].first_byte()
+		self.context[self.hash_value].first_byte()
 	}
 
 	pub fn second_byte(&self) -> u8 {
-		self.contexts[self.hash_value].second_byte()
+		self.context[self.hash_value].second_byte()
 	}
 
 	pub fn third_byte(&self) -> u8 {
-		self.contexts[self.hash_value].third_byte()
+		self.context[self.hash_value].third_byte()
 	}
 
 	pub fn match_count(&self) -> usize {
-		self.contexts[self.hash_value].match_count()
+		self.context[self.hash_value].match_count()
 	}
 
 	pub fn previous_byte(&self) -> u8 {
@@ -70,13 +71,13 @@ impl<const SIZE: usize> PrimaryContext<SIZE> {
 	}
 
 	pub fn matching(&mut self, next_byte: u8) -> ByteMatched {
-		let matching_byte: ByteMatched = self.contexts[self.hash_value].matching(next_byte);
+		let matching_byte: ByteMatched = self.context[self.hash_value].matching(next_byte);
 		self.update(next_byte);
 		return matching_byte;
 	}
 
 	pub fn matched(&mut self, next_byte: u8, matched: ByteMatched) {
-		self.contexts[self.hash_value].matched(next_byte, matched);
+		self.context[self.hash_value].matched(next_byte, matched);
 		self.update(next_byte);
 	}
 }

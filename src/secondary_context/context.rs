@@ -16,17 +16,18 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::basic::Buffer;
 use crate::secondary_context::bit::Bit;
 use crate::secondary_context::prediction::BitPrediction;
 
 pub struct SecondaryContext<const SIZE: usize> {
-    context: Box<[BitPrediction; SIZE]>,
+    context: Buffer<BitPrediction, SIZE>,
 }
 
 impl<const SIZE: usize> SecondaryContext<SIZE> {
     pub fn new() -> Self {
         Self {
-            context: Box::new([BitPrediction::new(); SIZE]),
+            context: Buffer::new(BitPrediction::new()),
         }
     }
 

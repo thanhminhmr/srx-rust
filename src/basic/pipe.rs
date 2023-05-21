@@ -16,35 +16,10 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use crate::basic::buffer::Buffer;
 use crate::basic::error::{AnyError, AnyResult};
 use crate::basic::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
-use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-
-// -----------------------------------------------
-
-#[derive(Clone)]
-struct Buffer<T: Copy + Send + 'static, const SIZE: usize>(Box<[T; SIZE]>);
-
-impl<T: Copy + Send + 'static, const SIZE: usize> Buffer<T, SIZE> {
-    fn new(value: T) -> Self {
-        Self(Box::new([value; SIZE]))
-    }
-}
-
-impl<T: Copy + Send + 'static, const SIZE: usize> Deref for Buffer<T, SIZE> {
-    type Target = [T; SIZE];
-
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
-}
-
-impl<T: Copy + Send + 'static, const SIZE: usize> DerefMut for Buffer<T, SIZE> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.deref_mut()
-    }
-}
 
 // -----------------------------------------------
 

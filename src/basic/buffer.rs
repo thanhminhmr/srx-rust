@@ -16,12 +16,29 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-mod buffer;
-mod error;
-mod io;
-mod pipe;
+use std::ops::{Deref, DerefMut};
 
-pub use self::buffer::Buffer;
-pub use self::error::{AnyError, AnyResult};
-pub use self::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
-pub use self::pipe::{pipe, PipedReader, PipedWriter};
+// -----------------------------------------------
+
+#[derive(Clone)]
+pub struct Buffer<T: Copy, const SIZE: usize>(Box<[T]>);
+
+impl<T: Copy, const SIZE: usize> Buffer<T, SIZE> {
+	pub fn new(value: T) -> Self {
+		Self(vec![value; SIZE].into_boxed_slice())
+	}
+}
+
+impl<T: Copy, const SIZE: usize> Deref for Buffer<T, SIZE> {
+	type Target = [T];
+
+	fn deref(&self) -> &Self::Target {
+		self.0.deref()
+	}
+}
+
+impl<T: Copy + Send + 'static, const SIZE: usize> DerefMut for Buffer<T, SIZE> {
+	fn deref_mut(&mut self) -> &mut Self::Target {
+		self.0.deref_mut()
+	}
+}
