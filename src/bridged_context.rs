@@ -30,6 +30,78 @@ pub type BridgedSecondaryContext = SecondaryContext<SECONDARY_CONTEXT_SIZE>;
 
 // -----------------------------------------------
 
+#[derive(Copy, Clone)]
+pub struct BridgedContextInfo {
+    first_byte: u8,
+    second_byte: u8,
+    third_byte: u8,
+    bit_context: usize,
+    literal_context: usize,
+}
+
+impl BridgedContextInfo {
+    const fn min(a: usize, b: usize) -> usize {
+        if a <= b { a } else { b }
+    }
+
+    const fn new(
+        previous_byte: u8,
+        first_byte: u8,
+        second_byte: u8,
+        third_byte: u8,
+        match_count: usize,
+        hash_value: usize,
+    ) -> Self {
+        Self {
+            first_byte,
+            second_byte,
+            third_byte,
+            bit_context: 0x4000 * 256
+                + if match_count < 4 {
+                    ((previous_byte as usize) << 2) | match_count
+                } else {
+                    1024 + (Self::min(match_count - 4, 63) >> 1)
+                } * 768,
+            literal_context: (hash_value & 0x3FFF) * 256,
+        }
+    }
+
+    pub const fn first_context(&self) -> usize {
+        return self.bit_context + self.first_byte as usize;
+    }
+
+    pub const fn second_context(&self) -> usize {
+        return self.bit_context + 0x100 + self.second_byte.wrapping_add(self.third_byte) as usize;
+    }
+
+    pub const fn third_context(&self) -> usize {
+        return self.bit_context
+            + 0x200
+            + self
+                .second_byte
+                .wrapping_mul(2)
+                .wrapping_sub(self.third_byte) as usize;
+    }
+
+    pub const fn literal_context(&self) -> usize {
+        self.literal_context
+    }
+
+    pub const fn first_byte(&self) -> u8 {
+        self.first_byte
+    }
+
+    pub const fn second_byte(&self) -> u8 {
+        self.second_byte
+    }
+
+    pub const fn third_byte(&self) -> u8 {
+        self.third_byte
+    }
+}
+
+// -----------------------------------------------
+
 pub struct BridgedPrimaryContext(PrimaryContext<PRIMARY_CONTEXT_SIZE>);
 
 impl BridgedPrimaryContext {
@@ -37,52 +109,16 @@ impl BridgedPrimaryContext {
         Self(PrimaryContext::new())
     }
 
-    fn bit_context(&self) -> usize {
-        use std::cmp::min;
-        let count: usize = self.0.match_count();
-        let bit_context: usize = 0x4000 * 256
-            + if count < 4 {
-                ((self.0.previous_byte() as usize) << 2) | count
-            } else {
-                1024 + (min(count - 4, 63) >> 1)
-            } * 768;
-        bit_context
-    }
-
-    pub fn first_context(&self) -> usize {
-        return self.bit_context() + self.0.first_byte() as usize;
-    }
-
-    pub fn second_context(&self) -> usize {
-        return self.bit_context()
-            + 0x100
-            + self.0.second_byte().wrapping_add(self.0.third_byte()) as usize;
-    }
-
-    pub fn third_context(&self) -> usize {
-        return self.bit_context()
-            + 0x200
-            + self
-                .0
-                .second_byte()
-                .wrapping_mul(2)
-                .wrapping_sub(self.0.third_byte()) as usize;
-    }
-
-    pub fn literal_context(&self) -> usize {
-        (self.0.hash_value() & 0x3FFF) * 256
-    }
-
-    pub fn first_byte(&self) -> u8 {
-        self.0.first_byte()
-    }
-
-    pub fn second_byte(&self) -> u8 {
-        self.0.second_byte()
-    }
-
-    pub fn third_byte(&self) -> u8 {
-        self.0.third_byte()
+    pub fn context_info(&self) -> BridgedContextInfo {
+        let (first_byte, second_byte, third_byte, match_count): (u8, u8, u8, usize) = self.0.get();
+        BridgedContextInfo::new(
+            self.0.previous_byte(),
+            first_byte,
+            second_byte,
+            third_byte,
+            match_count,
+            self.0.hash_value(),
+        )
     }
 
     pub fn matching(&mut self, next_byte: u8) -> ByteMatched {

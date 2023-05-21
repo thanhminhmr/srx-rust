@@ -28,21 +28,18 @@ impl ByteHistory {
         Self(0)
     }
 
-    pub fn first_byte(&self) -> u8 {
-        self.0 as u8
-    }
-
-    pub fn second_byte(&self) -> u8 {
-        (self.0 >> 8) as u8
-    }
-
-    pub fn third_byte(&self) -> u8 {
-        (self.0 >> 16) as u8
-    }
-
-    pub fn match_count(&self) -> usize {
-        // TODO can a state machine perform better than a simple match count here?
-        (self.0 >> 24) as usize
+    pub fn get(&self) -> (u8, u8, u8, usize) {
+        (
+            // first byte
+            self.0 as u8,
+            // second byte
+            (self.0 >> 8) as u8,
+            // third byte
+            (self.0 >> 16) as u8,
+            // match_count
+            // TODO can a state machine perform better than a simple match count here?
+            (self.0 >> 24) as usize,
+        )
     }
 
     pub fn matching(&mut self, next_byte: u8) -> ByteMatched {

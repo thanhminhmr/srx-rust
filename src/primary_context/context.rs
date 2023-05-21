@@ -40,20 +40,8 @@ impl<const SIZE: usize> PrimaryContext<SIZE> {
 		}
 	}
 
-	pub fn first_byte(&self) -> u8 {
-		self.context[self.hash_value].first_byte()
-	}
-
-	pub fn second_byte(&self) -> u8 {
-		self.context[self.hash_value].second_byte()
-	}
-
-	pub fn third_byte(&self) -> u8 {
-		self.context[self.hash_value].third_byte()
-	}
-
-	pub fn match_count(&self) -> usize {
-		self.context[self.hash_value].match_count()
+	pub fn get(&self) -> (u8, u8, u8, usize) {
+		self.context[self.hash_value].get()
 	}
 
 	pub fn previous_byte(&self) -> u8 {

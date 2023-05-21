@@ -17,7 +17,7 @@
  */
 
 use crate::basic::{pipe, AnyResult, Closable, PipedReader, PipedWriter, Writer};
-use crate::bridged_context::{BridgedPrimaryContext, BridgedSecondaryContext};
+use crate::bridged_context::{BridgedContextInfo, BridgedPrimaryContext, BridgedSecondaryContext};
 use crate::codec::shared::{run_file_reader, run_file_writer, thread_join};
 use crate::primary_context::ByteMatched;
 use crate::secondary_context::{Bit, BitDecoder};
@@ -58,17 +58,16 @@ impl<const IO_BUFFER_SIZE: usize> CombinedContextDecoder<IO_BUFFER_SIZE> {
 
     fn decode(mut self) -> AnyResult<()> {
         loop {
-            let (next_byte, matched): (u8, ByteMatched) = match self
-                .bit(self.primary_context.first_context())?
-            {
+            let info: BridgedContextInfo = self.primary_context.context_info();
+            let (next_byte, matched): (u8, ByteMatched) = match self.bit(info.first_context())? {
                 // match first
-                Bit::Zero => (self.primary_context.first_byte(), ByteMatched::FIRST),
+                Bit::Zero => (info.first_byte(), ByteMatched::FIRST),
                 // match next
-                Bit::One => match self.bit(self.primary_context.second_context())? {
+                Bit::One => match self.bit(info.second_context())? {
                     // literal
                     Bit::Zero => {
-                        let next_byte: u8 = self.byte(self.primary_context.literal_context())?;
-                        if next_byte == self.primary_context.first_byte() {
+                        let next_byte: u8 = self.byte(info.literal_context())?;
+                        if next_byte == info.first_byte() {
                             // eof, gave the reader/writer back
                             self.decoder.close()?;
                             self.writer.close()?;
@@ -77,11 +76,11 @@ impl<const IO_BUFFER_SIZE: usize> CombinedContextDecoder<IO_BUFFER_SIZE> {
                         (next_byte, ByteMatched::NONE)
                     }
                     // match next
-                    Bit::One => match self.bit(self.primary_context.third_context())? {
+                    Bit::One => match self.bit(info.third_context())? {
                         // match second
-                        Bit::Zero => (self.primary_context.second_byte(), ByteMatched::SECOND),
+                        Bit::Zero => (info.second_byte(), ByteMatched::SECOND),
                         // match third
-                        Bit::One => (self.primary_context.third_byte(), ByteMatched::THIRD),
+                        Bit::One => (info.third_byte(), ByteMatched::THIRD),
                     },
                 },
             };

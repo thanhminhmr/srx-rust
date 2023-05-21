@@ -17,7 +17,7 @@
  */
 
 use crate::basic::{pipe, AnyResult, Closable, PipedReader, PipedWriter, Reader, Writer};
-use crate::bridged_context::{BridgedPrimaryContext, BridgedSecondaryContext};
+use crate::bridged_context::{BridgedContextInfo, BridgedPrimaryContext, BridgedSecondaryContext};
 use crate::codec::shared::{run_file_reader, run_file_writer, thread_join};
 use crate::primary_context::ByteMatched;
 use crate::secondary_context::{Bit, BitEncoder};
@@ -61,33 +61,34 @@ fn run_primary_context_encoder<const IO_BUFFER_SIZE: usize, const MESSAGE_BUFFER
 ) -> AnyResult<()> {
     let mut context: BridgedPrimaryContext = BridgedPrimaryContext::new();
     loop {
+        let info: BridgedContextInfo = context.context_info();
         match reader.read()? {
             None => {
-                writer.write(PackedMessage::bit(context.first_context(), Bit::One))?;
-                writer.write(PackedMessage::bit(context.second_context(), Bit::Zero))?;
-                writer.write(PackedMessage::byte(context.literal_context(), context.first_byte()))?;
+                writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+                writer.write(PackedMessage::bit(info.second_context(), Bit::Zero))?;
+                writer.write(PackedMessage::byte(info.literal_context(), info.first_byte()))?;
                 reader.close()?;
                 writer.close()?;
                 return Ok(());
             }
             Some(current_byte) => match context.matching(current_byte) {
                 ByteMatched::FIRST => {
-                    writer.write(PackedMessage::bit(context.first_context(), Bit::Zero))?;
+                    writer.write(PackedMessage::bit(info.first_context(), Bit::Zero))?;
                 }
                 ByteMatched::NONE => {
-                    writer.write(PackedMessage::bit(context.first_context(), Bit::One))?;
-                    writer.write(PackedMessage::bit(context.second_context(), Bit::Zero))?;
-                    writer.write(PackedMessage::byte(context.literal_context(), current_byte))?;
+                    writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+                    writer.write(PackedMessage::bit(info.second_context(), Bit::Zero))?;
+                    writer.write(PackedMessage::byte(info.literal_context(), current_byte))?;
                 }
                 ByteMatched::SECOND => {
-                    writer.write(PackedMessage::bit(context.first_context(), Bit::One))?;
-                    writer.write(PackedMessage::bit(context.second_context(), Bit::One))?;
-                    writer.write(PackedMessage::bit(context.third_context(), Bit::Zero))?;
+                    writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+                    writer.write(PackedMessage::bit(info.second_context(), Bit::One))?;
+                    writer.write(PackedMessage::bit(info.third_context(), Bit::Zero))?;
                 }
                 ByteMatched::THIRD => {
-                    writer.write(PackedMessage::bit(context.first_context(), Bit::One))?;
-                    writer.write(PackedMessage::bit(context.second_context(), Bit::One))?;
-                    writer.write(PackedMessage::bit(context.third_context(), Bit::One))?;
+                    writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+                    writer.write(PackedMessage::bit(info.second_context(), Bit::One))?;
+                    writer.write(PackedMessage::bit(info.third_context(), Bit::One))?;
                 }
             },
         }
