@@ -17,8 +17,8 @@
  */
 
 use crate::basic::Buffer;
-use crate::primary_context::matched::ByteMatched;
 use crate::primary_context::history::ByteHistory;
+use crate::primary_context::matched::ByteMatched;
 
 // -----------------------------------------------
 

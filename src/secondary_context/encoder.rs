@@ -22,55 +22,55 @@ use crate::secondary_context::bit::Bit;
 // -----------------------------------------------
 
 pub struct BitEncoder<const SIZE: usize> {
-    low: u32,
-    high: u32,
-    writer: PipedWriter<u8, SIZE>,
+	low: u32,
+	high: u32,
+	writer: PipedWriter<u8, SIZE>,
 }
 
 impl<const SIZE: usize> BitEncoder<SIZE> {
-    pub fn new(writer: PipedWriter<u8, SIZE>) -> Self {
-        Self {
-            low: 0,
-            high: 0xFFFFFFFF,
-            writer,
-        }
-    }
+	pub fn new(writer: PipedWriter<u8, SIZE>) -> Self {
+		Self {
+			low: 0,
+			high: 0xFFFFFFFF,
+			writer,
+		}
+	}
 
-    pub fn bit(&mut self, prediction: u32, bit: Bit) -> AnyResult<()> {
-        // checking
-        debug_assert!(self.low < self.high);
-        // get delta
-        let delta: u32 = (((self.high - self.low) as u64 * prediction as u64) >> 32) as u32;
-        // calculate middle
-        let middle: u32 = self.low + delta;
-        debug_assert!(self.low <= middle && middle < self.high);
-        // set new range limit
-        *(match bit {
-            Bit::Zero => &mut self.low,
-            Bit::One => &mut self.high,
-        }) = middle
-            + match bit {
-                Bit::Zero => 1,
-                Bit::One => 0,
-            };
-        // shift bits out
-        while (self.high ^ self.low) < 0x01000000 {
-            // write byte
-            self.writer.write((self.low >> 24) as u8)?;
-            // shift new bits into high/low
-            self.low = self.low << 8;
-            self.high = (self.high << 8) | 0xFF;
-        }
-        // oke
-        return Ok(());
-    }
+	pub fn bit(&mut self, prediction: u32, bit: Bit) -> AnyResult<()> {
+		// checking
+		debug_assert!(self.low < self.high);
+		// get delta
+		let delta: u32 = (((self.high - self.low) as u64 * prediction as u64) >> 32) as u32;
+		// calculate middle
+		let middle: u32 = self.low + delta;
+		debug_assert!(self.low <= middle && middle < self.high);
+		// set new range limit
+		*(match bit {
+			Bit::Zero => &mut self.low,
+			Bit::One => &mut self.high,
+		}) = middle
+			+ match bit {
+				Bit::Zero => 1,
+				Bit::One => 0,
+			};
+		// shift bits out
+		while (self.high ^ self.low) < 0x01000000 {
+			// write byte
+			self.writer.write((self.low >> 24) as u8)?;
+			// shift new bits into high/low
+			self.low = self.low << 8;
+			self.high = (self.high << 8) | 0xFF;
+		}
+		// oke
+		return Ok(());
+	}
 }
 
 impl<const SIZE: usize> Closable<()> for BitEncoder<SIZE> {
-    fn close(mut self) -> AnyResult<()> {
-        // write byte
-        self.writer.write((self.low >> 24) as u8)?;
-        // return the writer
-        self.writer.close()
-    }
+	fn close(mut self) -> AnyResult<()> {
+		// write byte
+		self.writer.write((self.low >> 24) as u8)?;
+		// return the writer
+		self.writer.close()
+	}
 }

@@ -18,26 +18,26 @@
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub enum Bit {
-    Zero,
-    One,
+	Zero,
+	One,
 }
 
 impl From<Bit> for bool {
-    fn from(value: Bit) -> Self {
-        match value {
-            Bit::Zero => false,
-            Bit::One => true,
-        }
-    }
+	fn from(value: Bit) -> Self {
+		match value {
+			Bit::Zero => false,
+			Bit::One => true,
+		}
+	}
 }
 
 impl From<bool> for Bit {
-    fn from(value: bool) -> Self {
-        match value {
-            false => Bit::Zero,
-            true => Bit::One,
-        }
-    }
+	fn from(value: bool) -> Self {
+		match value {
+			false => Bit::Zero,
+			true => Bit::One,
+		}
+	}
 }
 
 macro_rules! impl_from_for_bit {

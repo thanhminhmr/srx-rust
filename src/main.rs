@@ -41,88 +41,88 @@ const MESSAGE_BUFFER_SIZE: usize = 0x40000;
 const SRX_HEADER: &[u8; 4] = b"sRx\x00";
 
 fn run(input_path: &Path, output_path: &Path, is_compress: bool) -> AnyResult<(u64, u64, f64)> {
-    // open file
-    let mut reader: File = File::open(input_path)?;
-    let mut writer: File = File::create(output_path)?;
+	// open file
+	let mut reader: File = File::open(input_path)?;
+	let mut writer: File = File::create(output_path)?;
 
-    // start the timer
-    let start: Instant = Instant::now();
+	// start the timer
+	let start: Instant = Instant::now();
 
-    // do the compression/decompression
-    let (mut done_reader, mut done_writer): (File, File) = if is_compress {
-        writer.write_all(SRX_HEADER)?;
-        encode::<File, File, IO_BUFFER_SIZE, MESSAGE_BUFFER_SIZE>(reader, writer)?
-    } else {
-        let mut buffer: [u8; 4] = [0; 4];
-        reader.read_exact(&mut buffer)?;
-        if !buffer.eq(SRX_HEADER) {
-            return Err(AnyError::from_string("Not a SRX compressed file!"));
-        }
-        decode::<File, File, IO_BUFFER_SIZE>(reader, writer)?
-    };
+	// do the compression/decompression
+	let (mut done_reader, mut done_writer): (File, File) = if is_compress {
+		writer.write_all(SRX_HEADER)?;
+		encode::<File, File, IO_BUFFER_SIZE, MESSAGE_BUFFER_SIZE>(reader, writer)?
+	} else {
+		let mut buffer: [u8; 4] = [0; 4];
+		reader.read_exact(&mut buffer)?;
+		if !buffer.eq(SRX_HEADER) {
+			return Err(AnyError::from_string("Not a SRX compressed file!"));
+		}
+		decode::<File, File, IO_BUFFER_SIZE>(reader, writer)?
+	};
 
-    // stop the timer and calculate the duration in seconds
-    let duration: f64 = start.elapsed().as_millis() as f64 / 1000.0;
+	// stop the timer and calculate the duration in seconds
+	let duration: f64 = start.elapsed().as_millis() as f64 / 1000.0;
 
-    // get the input and output size
-    let input_size: u64 = done_reader.stream_position()?;
-    let output_size: u64 = done_writer.stream_position()?;
+	// get the input and output size
+	let input_size: u64 = done_reader.stream_position()?;
+	let output_size: u64 = done_writer.stream_position()?;
 
-    // oke
-    Ok((input_size, output_size, duration))
+	// oke
+	Ok((input_size, output_size, duration))
 }
 
 fn help() -> ! {
-    println!(
-        "\
+	println!(
+		"\
 		srx: The fast Symbol Ranking based compressor, version {}.\n\
 		Copyright (C) 2023  Mai Thanh Minh (a.k.a. thanhminhmr)\n\n\
 		To   compress: srx c <input-file> <output-file>\n\
 		To decompress: srx d <input-file> <output-file>",
-        env!("CARGO_PKG_VERSION")
-    );
-    exit(0);
+		env!("CARGO_PKG_VERSION")
+	);
+	exit(0);
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+	let args: Vec<String> = env::args().collect();
 
-    // check and parse arguments
-    if args.len() != 4 {
-        help()
-    }
-    let is_compress: bool = match args[1].as_str() {
-        "c" => true,
-        "d" => false,
-        _ => help(),
-    };
-    let input_path: &Path = Path::new(&args[2]);
-    let output_path: &Path = Path::new(&args[3]);
+	// check and parse arguments
+	if args.len() != 4 {
+		help()
+	}
+	let is_compress: bool = match args[1].as_str() {
+		"c" => true,
+		"d" => false,
+		_ => help(),
+	};
+	let input_path: &Path = Path::new(&args[2]);
+	let output_path: &Path = Path::new(&args[3]);
 
-    // run the compression
-    match run(input_path, output_path, is_compress) {
-        Ok((input_size, output_size, duration)) => {
-            // calculating and report
-            let (percentage, speed) = if is_compress {
-                (
-                    output_size as f64 / input_size as f64 * 100.0,
-                    input_size as f64 / duration / (1 << 20) as f64,
-                )
-            } else {
-                (
-                    input_size as f64 / output_size as f64 * 100.0,
-                    output_size as f64 / duration / (1 << 20) as f64,
-                )
-            };
-            println!(
-                "{} -> {} ({:.2}%) in {:.2} seconds ({:.2} MiB/s)",
-                input_size, output_size, percentage, duration, speed
-            );
-        }
-        Err(error) => {
-            // something unexpected happened
-            println!("Error occurred! {}", error);
-            exit(1);
-        }
-    };
+	// run the compression
+	match run(input_path, output_path, is_compress) {
+		Ok((input_size, output_size, duration)) => {
+			// calculating and report
+			let (percentage, speed) = if is_compress {
+				(
+					output_size as f64 / input_size as f64 * 100.0,
+					input_size as f64 / duration / (1 << 20) as f64,
+				)
+			} else {
+				(
+					input_size as f64 / output_size as f64 * 100.0,
+					output_size as f64 / duration / (1 << 20) as f64,
+				)
+			};
+			println!(
+				"{} -> {} ({:.2}%) in {:.2} seconds ({:.2} MiB/s)",
+				input_size, output_size, percentage, duration, speed
+			);
+		}
+		Err(error) => {
+			// something unexpected happened
+			println!("Error occurred! {}", error);
+			exit(1);
+		}
+	};
 }
