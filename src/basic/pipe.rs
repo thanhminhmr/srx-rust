@@ -191,7 +191,7 @@ impl<T: Copy + Send + 'static, const SIZE: usize> ToConsumer<T> for PipedReader<
 					Ok(consumed_length)
 				} else {
 					Err(AnyError::from_string(
-						"Consumed length is greater than available lenght!",
+						"Consumed length is greater than available length!",
 					))
 				}
 			}

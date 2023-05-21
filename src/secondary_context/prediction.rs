@@ -26,7 +26,7 @@ pub const MULTIPLIER: [u32; 256] = {
 	let mut table = [0; 256];
 	let mut i: usize = 0;
 	while i < 256 {
-		let div = (1 << 33) / (i as u64 + 2);
+		let div: u64 = (1 << 33) / (i as u64 + 2);
 		table[i] = ((div >> 1) + (div & 1)) as u32; // rounding
 		i += 1;
 	}
