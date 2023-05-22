@@ -16,29 +16,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::Buffer;
-use crate::secondary_context::bit::Bit;
-use crate::secondary_context::state::BitState;
+mod state;
+#[cfg(test)]
+mod test;
 
-pub struct SecondaryContext<const SIZE: usize> {
-	context: Buffer<BitState, SIZE>,
-}
-
-impl<const SIZE: usize> SecondaryContext<SIZE> {
-	pub fn new() -> Self {
-		Self {
-			context: Buffer::new(BitState::new()),
-		}
-	}
-
-	pub fn get(&self, context_index: usize) -> u32 {
-		debug_assert!(context_index < SIZE);
-		self.context[context_index].get()
-	}
-
-	// return current prediction and then update the prediction with new bit
-	pub fn update(&mut self, context_index: usize, bit: Bit) -> u32 {
-		debug_assert!(context_index < SIZE);
-		self.context[context_index].update(bit)
-	}
-}
+pub use self::state::BitState;
