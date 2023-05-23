@@ -35,26 +35,32 @@ pub enum AnyError {
 }
 
 impl AnyError {
+	#[cold]
+	#[inline(always)]
 	pub fn from_string<S: Into<String>>(into_string: S) -> Self {
 		Self::String(into_string.into())
 	}
 
+	#[cold]
+	#[inline(always)]
 	pub fn from_box(any: Box<dyn Any + Send>) -> Self {
 		Self::Box(any)
 	}
 }
 
 impl Display for AnyError {
-	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+	fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
 		match self {
-			AnyError::String(value) => Display::fmt(value, f),
-			AnyError::Error(value) => Display::fmt(value, f),
-			AnyError::Box(value) => Debug::fmt(value, f),
+			AnyError::String(value) => Display::fmt(value, formatter),
+			AnyError::Error(value) => Display::fmt(value, formatter),
+			AnyError::Box(value) => Debug::fmt(value, formatter),
 		}
 	}
 }
 
 impl<E: Error + Send + 'static> From<E> for AnyError {
+	#[cold]
+	#[inline(always)]
 	fn from(e: E) -> Self {
 		Self::Error(Box::new(e))
 	}

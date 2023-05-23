@@ -23,9 +23,9 @@ use std::ops::{Deref, DerefMut};
 #[derive(Clone)]
 pub struct Buffer<T: Copy, const SIZE: usize>(Box<[T]>);
 
-impl<T: Copy, const SIZE: usize> Buffer<T, SIZE> {
-	pub fn new(value: T) -> Self {
-		Self(vec![value; SIZE].into_boxed_slice())
+impl<T: Copy + Default, const SIZE: usize> Buffer<T, SIZE> {
+	pub fn new() -> Self {
+		Self(vec![Default::default(); SIZE].into_boxed_slice())
 	}
 }
 

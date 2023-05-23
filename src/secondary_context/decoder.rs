@@ -17,7 +17,7 @@
  */
 
 use crate::basic::{AnyResult, Closable, PipedReader, Reader};
-use crate::secondary_context::bit::Bit;
+use crate::secondary_context::Bit;
 
 // -----------------------------------------------
 
@@ -38,16 +38,31 @@ impl<const SIZE: usize> BitDecoder<SIZE> {
 		}
 	}
 
-	pub fn bit(&mut self, prediction: u32) -> AnyResult<Bit> {
-		// shift bits in
-		while (self.high ^ self.low) < 0x01000000 {
+	#[cold]
+	#[inline(always)]
+	fn flush(&mut self) -> AnyResult<()> {
+		debug_assert!((self.high ^ self.low) < 0x01000000);
+		while {
+			// shift byte in
 			self.value = (self.value << 8)
 				| match self.reader.read()? {
 					None => 0xFF,
 					Some(byte) => byte as u32,
 				};
-			self.low = self.low << 8;
+			// shift new bits into high/low
+			self.low <<= 8;
 			self.high = (self.high << 8) | 0xFF;
+			// check condition again
+			(self.high ^ self.low) < 0x01000000
+		} {}
+		Ok(())
+	}
+
+	#[inline(always)]
+	pub fn bit(&mut self, prediction: u32) -> AnyResult<Bit> {
+		// shift bits in
+		if (self.high ^ self.low) < 0x01000000 {
+			self.flush()?;
 		}
 		// checking
 		debug_assert!(self.low < self.high);
@@ -66,11 +81,7 @@ impl<const SIZE: usize> BitDecoder<SIZE> {
 		*(match bit {
 			Bit::Zero => &mut self.low,
 			Bit::One => &mut self.high,
-		}) = middle
-			+ match bit {
-				Bit::Zero => 1,
-				Bit::One => 0,
-			};
+		}) = middle + (u32::from(bit) ^ 1);
 		// return the value
 		return Ok(bit);
 	}

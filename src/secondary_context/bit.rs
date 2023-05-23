@@ -51,6 +51,15 @@ macro_rules! impl_from_for_bit {
 					}
 				}
             }
+            impl From<$t> for Bit {
+				fn from(value: $t) -> Self {
+					match value {
+						0 => Bit::Zero,
+						1 => Bit::One,
+						_ => panic!("Unexpected value for Bit!"),
+					}
+				}
+            }
         )*
     };
 }

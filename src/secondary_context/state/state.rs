@@ -17,74 +17,26 @@
  */
 
 use crate::secondary_context::Bit;
-use std::ops::{Index, IndexMut};
-
-// -----------------------------------------------
-
-include!("state_table.inc");
-
-// -----------------------------------------------
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct StateElement(u64);
-
-impl StateElement {
-	pub const fn new(prediction: u32, next_if_zero: u16, next_if_one: u16) -> Self {
-		Self(((prediction as u64) << 32) | ((next_if_zero as u64) << 16) | (next_if_one as u64))
-	}
-
-	pub fn next(&self, bit: Bit) -> u16 {
-		(if bit.into() { self.0 } else { self.0 >> 16 }) as u16
-	}
-
-	pub fn prediction(&self) -> u32 {
-		(self.0 >> 32) as u32
-	}
-}
-
-// -----------------------------------------------
-
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct StateTable([StateElement; 1 << 16]);
-
-#[cfg(test)]
-impl StateTable {
-	pub fn new() -> Self {
-		Self([StateElement(0); 1 << 16])
-	}
-}
-
-impl Index<usize> for StateTable {
-	type Output = StateElement;
-
-	fn index(&self, index: usize) -> &Self::Output {
-		&self.0[index]
-	}
-}
-
-impl IndexMut<usize> for StateTable {
-	fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-		&mut self.0[index]
-	}
-}
+use super::info::{StateInfo, STATE_TABLE};
 
 // -----------------------------------------------
 
 #[derive(Copy, Clone)]
 pub struct BitState(u16);
 
-impl BitState {
-	pub fn new() -> Self {
+impl Default for BitState {
+	fn default() -> Self {
 		Self(0)
 	}
+}
 
-	pub fn get(&self) -> u32 {
-		STATE_TABLE[self.0 as usize].prediction()
+impl BitState {
+	pub fn get_info(&self) -> StateInfo {
+		STATE_TABLE[self.0 as usize]
 	}
 
-	pub fn update(&mut self, bit: Bit) -> u32 {
-		let current_state: StateElement = STATE_TABLE[self.0 as usize];
+	pub fn update(&mut self, current_state: StateInfo, bit: Bit) {
+		debug_assert!(STATE_TABLE[self.0 as usize] == current_state);
 		self.0 = current_state.next(bit);
-		current_state.prediction()
 	}
 }

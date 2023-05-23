@@ -16,14 +16,14 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::Buffer;
-use crate::primary_context::history::ByteHistory;
-use crate::primary_context::matched::ByteMatched;
+use crate::basic::{Buffer, Byte};
+use super::history::{ByteHistory, HistoryState};
+use super::matched::ByteMatched;
 
 // -----------------------------------------------
 
 pub struct PrimaryContext<const SIZE: usize> {
-	previous_byte: u8,
+	previous_byte: Byte,
 	hash_value: usize,
 	context: Buffer<ByteHistory, SIZE>,
 }
@@ -34,38 +34,38 @@ impl<const SIZE: usize> PrimaryContext<SIZE> {
 
 	pub fn new() -> Self {
 		Self {
-			previous_byte: 0,
+			previous_byte: Byte::from(0),
 			hash_value: 0,
-			context: Buffer::new(ByteHistory::new()),
+			context: Buffer::new(),
 		}
 	}
 
-	pub fn get(&self) -> (u8, u8, u8, usize) {
-		self.context[self.hash_value].get()
+	pub fn get_history(&self) -> ByteHistory {
+		self.context[self.hash_value]
 	}
 
-	pub fn previous_byte(&self) -> u8 {
-		self.previous_byte as u8
+	pub fn previous_byte(&self) -> Byte {
+		self.previous_byte
 	}
 
 	pub fn hash_value(&self) -> usize {
 		self.hash_value
 	}
 
-	fn update(&mut self, next_byte: u8) {
+	pub fn matching(&mut self, current_state: HistoryState, next_byte: Byte) -> ByteMatched {
+		let current_history: &mut ByteHistory = &mut self.context[self.hash_value];
+		let matching_byte: ByteMatched = current_history.matching(current_state, next_byte);
 		self.previous_byte = next_byte;
-		self.hash_value = (self.hash_value * (5 << 5) + next_byte as usize + 1) % SIZE;
+		self.hash_value = (self.hash_value * (5 << 5) + usize::from(next_byte) + 1) % SIZE;
 		debug_assert!(self.hash_value < SIZE);
-	}
-
-	pub fn matching(&mut self, next_byte: u8) -> ByteMatched {
-		let matching_byte: ByteMatched = self.context[self.hash_value].matching(next_byte);
-		self.update(next_byte);
 		return matching_byte;
 	}
 
-	pub fn matched(&mut self, next_byte: u8, matched: ByteMatched) {
-		self.context[self.hash_value].matched(next_byte, matched);
-		self.update(next_byte);
+	pub fn matched(&mut self, current_state: HistoryState, next_byte: Byte, matched: ByteMatched) {
+		let current_history: &mut ByteHistory = &mut self.context[self.hash_value];
+		current_history.matched(current_state, next_byte, matched);
+		self.previous_byte = next_byte;
+		self.hash_value = (self.hash_value * (5 << 5) + usize::from(next_byte) + 1) % SIZE;
+		debug_assert!(self.hash_value < SIZE);
 	}
 }

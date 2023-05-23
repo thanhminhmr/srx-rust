@@ -16,9 +16,9 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::buffer::Buffer;
-use crate::basic::error::{AnyError, AnyResult};
-use crate::basic::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
+use super::buffer::Buffer;
+use super::error::{AnyError, AnyResult};
+use super::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 
 // -----------------------------------------------
@@ -28,8 +28,7 @@ type ReaderToWriter<T, const SIZE: usize> = Buffer<T, SIZE>;
 
 // -----------------------------------------------
 
-pub fn pipe<T: Copy + Send + 'static, const SIZE: usize>(
-	value: T,
+pub fn pipe<T: Default + Copy + Send + 'static, const SIZE: usize>(
 ) -> (PipedWriter<T, SIZE>, PipedReader<T, SIZE>) {
 	let (writer_sender, reader_receiver): (
 		SyncSender<WriterToReader<T, SIZE>>,
@@ -43,13 +42,13 @@ pub fn pipe<T: Copy + Send + 'static, const SIZE: usize>(
 		PipedWriter {
 			sender: writer_sender,
 			receiver: writer_receiver,
-			buffer: Some(Buffer::new(value)),
+			buffer: Some(Buffer::new()),
 			index: 0,
 		},
 		PipedReader {
 			sender: reader_sender,
 			receiver: reader_receiver,
-			buffer: Some(Buffer::new(value)),
+			buffer: Some(Buffer::new()),
 			index: 0,
 			length: 0,
 		},
@@ -66,7 +65,7 @@ pub struct PipedWriter<T: Copy + Send + 'static, const SIZE: usize> {
 }
 
 impl<T: Copy + Send + 'static, const SIZE: usize> PipedWriter<T, SIZE> {
-	// private sync
+	#[cold]
 	fn sync(&mut self) -> AnyResult<()> {
 		debug_assert!(self.buffer.is_some());
 		debug_assert!(self.index > 0 && self.index <= SIZE);
@@ -139,21 +138,20 @@ pub struct PipedReader<T: Copy + Send + 'static, const SIZE: usize> {
 }
 
 impl<T: Copy + Send + 'static, const SIZE: usize> PipedReader<T, SIZE> {
+	#[cold]
 	fn sync(&mut self) {
-		debug_assert!(self.index <= self.length && self.length <= SIZE);
-		if !self.buffer.is_none() && self.index >= self.length {
-			// take the old buffer and set it to None
-			let old_buffer: Buffer<T, SIZE> = self.buffer.take().unwrap();
-			// receive the new buffer
-			if let Ok((new_buffer, length)) = self.receiver.recv() {
-				debug_assert!(length > 0 && length <= SIZE);
-				// set the new buffer and its length
-				self.buffer = Some(new_buffer);
-				self.length = length;
-				self.index = 0;
-				// send the old buffer away, maybe print something to log if error?
-				let _error_ignored_ = self.sender.send(old_buffer);
-			}
+		debug_assert!(self.buffer.is_some() && self.index == self.length && self.length <= SIZE);
+		// take the old buffer and set it to None
+		let old_buffer: Buffer<T, SIZE> = self.buffer.take().unwrap();
+		// receive the new buffer
+		if let Ok((new_buffer, length)) = self.receiver.recv() {
+			debug_assert!(length > 0 && length <= SIZE);
+			// set the new buffer and its length
+			self.buffer = Some(new_buffer);
+			self.length = length;
+			self.index = 0;
+			// send the old buffer away, maybe print something to log if error?
+			let _error_ignored_ = self.sender.send(old_buffer);
 		}
 	}
 }
@@ -161,7 +159,9 @@ impl<T: Copy + Send + 'static, const SIZE: usize> PipedReader<T, SIZE> {
 impl<T: Copy + Send + 'static, const SIZE: usize> Reader<T> for PipedReader<T, SIZE> {
 	fn read(&mut self) -> AnyResult<Option<T>> {
 		debug_assert!(self.index <= self.length && self.length <= SIZE);
-		self.sync();
+		if self.buffer.is_some() && self.index == self.length {
+			self.sync();
+		}
 		match &mut self.buffer {
 			None => Ok(None),
 			Some(buffer) => {
@@ -178,7 +178,9 @@ impl<T: Copy + Send + 'static, const SIZE: usize> Reader<T> for PipedReader<T, S
 impl<T: Copy + Send + 'static, const SIZE: usize> ToConsumer<T> for PipedReader<T, SIZE> {
 	fn consume<C: Consumer<T>>(&mut self, consumer: &mut C) -> AnyResult<usize> {
 		debug_assert!(self.index <= self.length && self.length <= SIZE);
-		self.sync();
+		if self.buffer.is_some() && self.index == self.length {
+			self.sync();
+		}
 		match &mut self.buffer {
 			None => Ok(0),
 			Some(buffer) => {

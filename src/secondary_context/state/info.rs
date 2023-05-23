@@ -16,10 +16,27 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-mod info;
-mod state;
-#[cfg(test)]
-mod test;
+use crate::secondary_context::Bit;
 
-pub use self::state::BitState;
-pub use self::info::StateInfo;
+// -----------------------------------------------
+
+include!("state_table.inc");
+
+// -----------------------------------------------
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub struct StateInfo(u64);
+
+impl StateInfo {
+	pub const fn new(prediction: u32, next_if_zero: u16, next_if_one: u16) -> Self {
+		Self(((prediction as u64) << 32) | ((next_if_zero as u64) << 16) | (next_if_one as u64))
+	}
+
+	pub fn next(&self, bit: Bit) -> u16 {
+		(if bit.into() { self.0 } else { self.0 >> 16 }) as u16
+	}
+
+	pub fn prediction(&self) -> u32 {
+		(self.0 >> 32) as u32
+	}
+}

@@ -17,11 +17,13 @@
  */
 
 mod buffer;
+mod byte;
 mod error;
 mod io;
 mod pipe;
 
 pub use self::buffer::Buffer;
+pub use self::byte::Byte;
 pub use self::error::{AnyError, AnyResult};
 pub use self::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
 pub use self::pipe::{pipe, PipedReader, PipedWriter};

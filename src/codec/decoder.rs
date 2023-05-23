@@ -16,11 +16,11 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::{pipe, AnyResult, Closable, PipedReader, PipedWriter, Writer};
+use super::shared::{run_file_reader, run_file_writer, thread_join};
+use crate::basic::{pipe, AnyResult, Byte, Closable, PipedReader, PipedWriter, Writer};
 use crate::bridged_context::{BridgedContextInfo, BridgedPrimaryContext, BridgedSecondaryContext};
-use crate::codec::shared::{run_file_reader, run_file_writer, thread_join};
 use crate::primary_context::ByteMatched;
-use crate::secondary_context::{Bit, BitDecoder};
+use crate::secondary_context::{Bit, BitDecoder, StateInfo};
 use std::io::{Read, Write};
 use std::thread::{scope, ScopedJoinHandle};
 
@@ -34,39 +34,45 @@ struct CombinedContextDecoder<const IO_BUFFER_SIZE: usize> {
 }
 
 impl<const IO_BUFFER_SIZE: usize> CombinedContextDecoder<IO_BUFFER_SIZE> {
+	#[inline(always)]
 	fn bit(&mut self, context_index: usize) -> AnyResult<Bit> {
-		let prediction: u32 = self.secondary_context.get(context_index);
-		let bit: Bit = self.decoder.bit(prediction)?;
-		self.secondary_context.update(context_index, bit);
+		let current_state: StateInfo = self.secondary_context.get_info(context_index);
+		let bit: Bit = self.decoder.bit(current_state.prediction())?;
+		self.secondary_context
+			.update(current_state, context_index, bit);
 		Ok(bit)
 	}
 
-	fn byte(&mut self, context_index: usize) -> AnyResult<u8> {
+	fn byte(&mut self, context_index: usize) -> AnyResult<Byte> {
 		let mut high: usize = 1;
 		high += high + usize::from(self.bit(context_index + high)?);
 		high += high + usize::from(self.bit(context_index + high)?);
 		high += high + usize::from(self.bit(context_index + high)?);
 		high += high + usize::from(self.bit(context_index + high)?);
-		let low_context: usize = context_index + (15 * (high - 15)) as usize;
+		let low_context: usize = context_index + 15 * (high - 15);
 		let mut low: usize = 1;
 		low += low + usize::from(self.bit(low_context + low)?);
 		low += low + usize::from(self.bit(low_context + low)?);
 		low += low + usize::from(self.bit(low_context + low)?);
 		low += low + usize::from(self.bit(low_context + low)?);
-		return Ok((((high - 16) << 4) | (low - 16)) as u8);
+		return Ok(Byte::from(((high - 16) << 4) | (low - 16)));
 	}
 
 	fn decode(mut self) -> AnyResult<()> {
 		loop {
-			let info: BridgedContextInfo = self.primary_context.context_info();
-			let (next_byte, matched): (u8, ByteMatched) = match self.bit(info.first_context())? {
+			let info: BridgedContextInfo = BridgedContextInfo::new(
+				self.primary_context.get_history(),
+				self.primary_context.previous_byte(),
+				self.primary_context.hash_value(),
+			);
+			let (next_byte, matched): (Byte, ByteMatched) = match self.bit(info.first_context())? {
 				// match first
 				Bit::Zero => (info.first_byte(), ByteMatched::FIRST),
 				// match next
 				Bit::One => match self.bit(info.second_context())? {
 					// literal
 					Bit::Zero => {
-						let next_byte: u8 = self.byte(info.literal_context())?;
+						let next_byte: Byte = self.byte(info.literal_context())?;
 						if next_byte == info.first_byte() {
 							// eof, gave the reader/writer back
 							self.decoder.close()?;
@@ -84,8 +90,9 @@ impl<const IO_BUFFER_SIZE: usize> CombinedContextDecoder<IO_BUFFER_SIZE> {
 					},
 				},
 			};
-			self.writer.write(next_byte)?;
-			self.primary_context.matched(next_byte, matched);
+			self.writer.write(next_byte.into())?;
+			self.primary_context
+				.matched(info.current_state(), next_byte, matched);
 		}
 	}
 }
@@ -115,11 +122,11 @@ pub fn decode<R: Read + Send, W: Write + Send, const IO_BUFFER_SIZE: usize>(
 		let (input_writer, input_reader): (
 			PipedWriter<u8, IO_BUFFER_SIZE>,
 			PipedReader<u8, IO_BUFFER_SIZE>,
-		) = pipe::<u8, IO_BUFFER_SIZE>(0);
+		) = pipe::<u8, IO_BUFFER_SIZE>();
 		let (output_writer, output_reader): (
 			PipedWriter<u8, IO_BUFFER_SIZE>,
 			PipedReader<u8, IO_BUFFER_SIZE>,
-		) = pipe::<u8, IO_BUFFER_SIZE>(0);
+		) = pipe::<u8, IO_BUFFER_SIZE>();
 		let file_reader: ScopedJoinHandle<AnyResult<R>> =
 			scope.spawn(|| run_file_reader(reader, input_writer));
 		let combined_context_decoder: ScopedJoinHandle<AnyResult<()>> =

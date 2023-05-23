@@ -17,8 +17,8 @@
  */
 
 use crate::basic::Buffer;
-use crate::secondary_context::bit::Bit;
-use crate::secondary_context::state::BitState;
+use super::bit::Bit;
+use super::state::{BitState, StateInfo};
 
 pub struct SecondaryContext<const SIZE: usize> {
 	context: Buffer<BitState, SIZE>,
@@ -27,18 +27,18 @@ pub struct SecondaryContext<const SIZE: usize> {
 impl<const SIZE: usize> SecondaryContext<SIZE> {
 	pub fn new() -> Self {
 		Self {
-			context: Buffer::new(BitState::new()),
+			context: Buffer::new(),
 		}
 	}
 
-	pub fn get(&self, context_index: usize) -> u32 {
+	pub fn get_info(&self, context_index: usize) -> StateInfo {
 		debug_assert!(context_index < SIZE);
-		self.context[context_index].get()
+		self.context[context_index].get_info()
 	}
 
 	// return current prediction and then update the prediction with new bit
-	pub fn update(&mut self, context_index: usize, bit: Bit) -> u32 {
+	pub fn update(&mut self, current_state: StateInfo, context_index: usize, bit: Bit) {
 		debug_assert!(context_index < SIZE);
-		self.context[context_index].update(bit)
+		self.context[context_index].update(current_state, bit)
 	}
 }

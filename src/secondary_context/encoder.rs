@@ -17,7 +17,7 @@
  */
 
 use crate::basic::{AnyResult, Closable, PipedWriter, Writer};
-use crate::secondary_context::bit::Bit;
+use crate::secondary_context::Bit;
 
 // -----------------------------------------------
 
@@ -36,6 +36,23 @@ impl<const SIZE: usize> BitEncoder<SIZE> {
 		}
 	}
 
+	#[cold]
+	#[inline(always)]
+	fn flush(&mut self) -> AnyResult<()> {
+		debug_assert!((self.high ^ self.low) < 0x01000000);
+		while {
+			// write byte
+			self.writer.write((self.low >> 24) as u8)?;
+			// shift new bits into high/low
+			self.low = self.low << 8;
+			self.high = (self.high << 8) | 0xFF;
+			// check condition again
+			(self.high ^ self.low) < 0x01000000
+		} {}
+		Ok(())
+	}
+
+	#[inline(always)]
 	pub fn bit(&mut self, prediction: u32, bit: Bit) -> AnyResult<()> {
 		// checking
 		debug_assert!(self.low < self.high);
@@ -48,18 +65,10 @@ impl<const SIZE: usize> BitEncoder<SIZE> {
 		*(match bit {
 			Bit::Zero => &mut self.low,
 			Bit::One => &mut self.high,
-		}) = middle
-			+ match bit {
-				Bit::Zero => 1,
-				Bit::One => 0,
-			};
+		}) = middle + (u32::from(bit) ^ 1);
 		// shift bits out
-		while (self.high ^ self.low) < 0x01000000 {
-			// write byte
-			self.writer.write((self.low >> 24) as u8)?;
-			// shift new bits into high/low
-			self.low = self.low << 8;
-			self.high = (self.high << 8) | 0xFF;
+		if (self.high ^ self.low) < 0x01000000 {
+			self.flush()?;
 		}
 		// oke
 		return Ok(());

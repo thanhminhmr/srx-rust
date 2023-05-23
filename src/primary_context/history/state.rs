@@ -17,7 +17,6 @@
  */
 
 use crate::primary_context::ByteMatched;
-use std::ops::{Index, IndexMut};
 
 // -----------------------------------------------
 
@@ -26,9 +25,9 @@ include!("state_table.inc");
 // -----------------------------------------------
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub struct StateElement(u64);
+pub struct HistoryState(u64);
 
-impl StateElement {
+impl HistoryState {
 	pub const fn new(
 		first_count: u8,
 		next_if_first: u8,
@@ -45,42 +44,16 @@ impl StateElement {
 		)
 	}
 
-	pub fn next(&self, matched: ByteMatched) -> u8 {
+	pub fn next(&self, matched: ByteMatched) -> usize {
 		match matched {
-			ByteMatched::FIRST => self.0 as u8,
-			ByteMatched::SECOND => (self.0 >> 8) as u8,
-			ByteMatched::THIRD => (self.0 >> 16) as u8,
-			ByteMatched::NONE => (self.0 >> 24) as u8,
+			ByteMatched::FIRST => (self.0 & 0xFF) as usize,
+			ByteMatched::SECOND => ((self.0 >> 8) & 0xFF) as usize,
+			ByteMatched::THIRD => ((self.0 >> 16) & 0xFF) as usize,
+			ByteMatched::NONE => ((self.0 >> 24) & 0xFF) as usize,
 		}
 	}
 
-	pub fn get(&self) -> usize {
+	pub fn match_count(&self) -> usize {
 		(self.0 >> 32) as usize
-	}
-}
-
-// -----------------------------------------------
-
-#[derive(Eq, PartialEq, Debug)]
-pub struct StateTable<const SIZE: usize>([StateElement; SIZE]);
-
-#[cfg(test)]
-impl<const SIZE: usize> StateTable<SIZE> {
-	pub fn new() -> Self {
-		Self([StateElement(0); SIZE])
-	}
-}
-
-impl<const SIZE: usize> Index<usize> for StateTable<SIZE> {
-	type Output = StateElement;
-
-	fn index(&self, index: usize) -> &Self::Output {
-		&self.0[index]
-	}
-}
-
-impl<const SIZE: usize> IndexMut<usize> for StateTable<SIZE> {
-	fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-		&mut self.0[index]
 	}
 }

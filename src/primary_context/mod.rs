@@ -21,4 +21,5 @@ mod history;
 mod matched;
 
 pub use self::context::PrimaryContext;
+pub use self::history::{ByteHistory, HistoryState};
 pub use self::matched::ByteMatched;

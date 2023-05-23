@@ -16,8 +16,8 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
+use super::info::{StateInfo, STATE_TABLE};
 use crate::basic::AnyResult;
-use crate::secondary_context::state::state::{StateElement, StateTable, STATE_TABLE};
 use crate::secondary_context::Bit;
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
@@ -566,23 +566,23 @@ fn test_and_generate_state_table() -> AnyResult<()> {
 	});
 
 	// create next states array
-	println!("pub const STATE_TABLE: StateTable = StateTable([");
-	let mut state_table: StateTable = StateTable::new();
+	println!("pub const STATE_TABLE: &[StateInfo] = &[ // length = {}", data.len());
+	let mut state_table: Vec<StateInfo> = Vec::new();
 	for index in 0..65536 {
 		let state: &PrimitiveState = data[index];
 		let level: usize = state.current_state.count as usize;
 		let prediction: u32 = u32::from(state.current_state.value);
 		let next_if_zero: u16 = *data_index.get(&state.next_if_zero).unwrap() as u16;
 		let next_if_one: u16 = *data_index.get(&state.next_if_one).unwrap() as u16;
-		state_table[index] = StateElement::new(prediction, next_if_zero, next_if_one);
+		state_table.push(StateInfo::new(prediction, next_if_zero, next_if_one));
 		println!(
-			"\tStateElement::new(0x{:08X}, 0x{:04X}, 0x{:04X}), // 0x{:04X}, {}",
+			"\tStateInfo::new(0x{:08X}, 0x{:04X}, 0x{:04X}), // 0x{:04X}, {}",
 			prediction, next_if_zero, next_if_one, index, level,
 		);
 	}
-	println!("]);");
+	println!("];");
 
-	debug_assert!(STATE_TABLE == state_table);
+	debug_assert!(state_table.eq(STATE_TABLE));
 
 	Ok(())
 }

@@ -16,11 +16,11 @@
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-use crate::basic::{pipe, AnyResult, Closable, PipedReader, PipedWriter, Reader, Writer};
+use super::shared::{run_file_reader, run_file_writer, thread_join};
+use crate::basic::{pipe, AnyResult, Byte, Closable, PipedReader, PipedWriter, Reader, Writer};
 use crate::bridged_context::{BridgedContextInfo, BridgedPrimaryContext, BridgedSecondaryContext};
-use crate::codec::shared::{run_file_reader, run_file_writer, thread_join};
 use crate::primary_context::ByteMatched;
-use crate::secondary_context::{Bit, BitEncoder};
+use crate::secondary_context::{Bit, BitEncoder, StateInfo};
 use std::io::{Read, Write};
 use std::thread::{scope, ScopedJoinHandle};
 
@@ -29,26 +29,32 @@ use std::thread::{scope, ScopedJoinHandle};
 #[derive(Copy, Clone)]
 enum Message {
 	Bit(usize, Bit),
-	Byte(usize, u8),
+	Byte(usize, Byte),
 }
 
 #[derive(Copy, Clone)]
 struct PackedMessage(u32);
+
+impl Default for PackedMessage {
+	fn default() -> Self {
+		Self(0)
+	}
+}
 
 impl PackedMessage {
 	fn bit(context: usize, bit: Bit) -> Self {
 		Self(u32::from(bit) << 30 | context as u32)
 	}
 
-	fn byte(context: usize, byte: u8) -> Self {
-		Self(0x80000000 | context as u32 | byte as u32)
+	fn byte(context: usize, byte: Byte) -> Self {
+		Self(0x80000000 | context as u32 | u32::from(byte))
 	}
 
 	fn get(&self) -> Message {
 		if self.0 < 0x80000000 {
-			Message::Bit((self.0 & 0x3FFFFFFF) as usize, Bit::from(self.0 >> 30 != 0))
+			Message::Bit((self.0 & 0x3FFFFFFF) as usize, Bit::from(self.0 >> 30))
 		} else {
-			Message::Byte((self.0 & 0x7FFFFF00) as usize, (self.0 & 0xFF) as u8)
+			Message::Byte((self.0 & 0x7FFFFF00) as usize, Byte::from(self.0 & 0xFF))
 		}
 	}
 }
@@ -61,7 +67,11 @@ fn run_primary_context_encoder<const IO_BUFFER_SIZE: usize, const MESSAGE_BUFFER
 ) -> AnyResult<()> {
 	let mut context: BridgedPrimaryContext = BridgedPrimaryContext::new();
 	loop {
-		let info: BridgedContextInfo = context.context_info();
+		let info: BridgedContextInfo = BridgedContextInfo::new(
+			context.get_history(),
+			context.previous_byte(),
+			context.hash_value(),
+		);
 		match reader.read()? {
 			None => {
 				writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
@@ -74,26 +84,31 @@ fn run_primary_context_encoder<const IO_BUFFER_SIZE: usize, const MESSAGE_BUFFER
 				writer.close()?;
 				return Ok(());
 			}
-			Some(current_byte) => match context.matching(current_byte) {
-				ByteMatched::FIRST => {
-					writer.write(PackedMessage::bit(info.first_context(), Bit::Zero))?;
+			Some(current_byte) => {
+				match context.matching(info.current_state(), Byte::from(current_byte)) {
+					ByteMatched::FIRST => {
+						writer.write(PackedMessage::bit(info.first_context(), Bit::Zero))?;
+					}
+					ByteMatched::NONE => {
+						writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+						writer.write(PackedMessage::bit(info.second_context(), Bit::Zero))?;
+						writer.write(PackedMessage::byte(
+							info.literal_context(),
+							Byte::from(current_byte),
+						))?;
+					}
+					ByteMatched::SECOND => {
+						writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+						writer.write(PackedMessage::bit(info.second_context(), Bit::One))?;
+						writer.write(PackedMessage::bit(info.third_context(), Bit::Zero))?;
+					}
+					ByteMatched::THIRD => {
+						writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
+						writer.write(PackedMessage::bit(info.second_context(), Bit::One))?;
+						writer.write(PackedMessage::bit(info.third_context(), Bit::One))?;
+					}
 				}
-				ByteMatched::NONE => {
-					writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
-					writer.write(PackedMessage::bit(info.second_context(), Bit::Zero))?;
-					writer.write(PackedMessage::byte(info.literal_context(), current_byte))?;
-				}
-				ByteMatched::SECOND => {
-					writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
-					writer.write(PackedMessage::bit(info.second_context(), Bit::One))?;
-					writer.write(PackedMessage::bit(info.third_context(), Bit::Zero))?;
-				}
-				ByteMatched::THIRD => {
-					writer.write(PackedMessage::bit(info.first_context(), Bit::One))?;
-					writer.write(PackedMessage::bit(info.second_context(), Bit::One))?;
-					writer.write(PackedMessage::bit(info.third_context(), Bit::One))?;
-				}
-			},
+			}
 		}
 	}
 }
@@ -109,25 +124,27 @@ struct SecondaryContextEncoder<const IO_BUFFER_SIZE: usize, const MESSAGE_BUFFER
 impl<const IO_BUFFER_SIZE: usize, const MESSAGE_BUFFER_SIZE: usize>
 	SecondaryContextEncoder<IO_BUFFER_SIZE, MESSAGE_BUFFER_SIZE>
 {
+	#[inline(always)]
 	fn bit(&mut self, context_index: usize, bit: Bit) -> AnyResult<()> {
-		self.encoder
-			.bit(self.context.update(context_index, bit), bit)
+		let current_state: StateInfo = self.context.get_info(context_index);
+		self.context.update(current_state, context_index, bit);
+		self.encoder.bit(current_state.prediction(), bit)
 	}
 
-	fn byte(&mut self, context_index: usize, byte: u8) -> AnyResult<()> {
+	fn byte(&mut self, context_index: usize, byte: Byte) -> AnyResult<()> {
 		// code high 4 bits in first 15 contexts
-		let high: usize = ((byte >> 4) | 16) as usize;
-		self.bit(context_index + 1, Bit::from(high >> 3 & 1 != 0))?;
-		self.bit(context_index + (high >> 3), Bit::from(high >> 2 & 1 != 0))?;
-		self.bit(context_index + (high >> 2), Bit::from(high >> 1 & 1 != 0))?;
-		self.bit(context_index + (high >> 1), Bit::from(high & 1 != 0))?;
+		let high: usize = (usize::from(byte) >> 4) | 16;
+		self.bit(context_index + 1, Bit::from(high >> 3 & 1))?;
+		self.bit(context_index + (high >> 3), Bit::from(high >> 2 & 1))?;
+		self.bit(context_index + (high >> 2), Bit::from(high >> 1 & 1))?;
+		self.bit(context_index + (high >> 1), Bit::from(high & 1))?;
 		// code low 4 bits in one of 16 blocks of 15 contexts (to reduce cache misses)
-		let low_context: usize = context_index + (15 * (high - 15)) as usize;
-		let low: usize = ((byte & 15) | 16) as usize;
-		self.bit(low_context + 1, Bit::from(low >> 3 & 1 != 0))?;
-		self.bit(low_context + (low >> 3), Bit::from(low >> 2 & 1 != 0))?;
-		self.bit(low_context + (low >> 2), Bit::from(low >> 1 & 1 != 0))?;
-		self.bit(low_context + (low >> 1), Bit::from(low & 1 != 0))?;
+		let low_context: usize = context_index + 15 * (high - 15);
+		let low: usize = (usize::from(byte) & 15) | 16;
+		self.bit(low_context + 1, Bit::from(low >> 3 & 1))?;
+		self.bit(low_context + (low >> 3), Bit::from(low >> 2 & 1))?;
+		self.bit(low_context + (low >> 2), Bit::from(low >> 1 & 1))?;
+		self.bit(low_context + (low >> 1), Bit::from(low & 1))?;
 		// oke
 		return Ok(());
 	}
@@ -179,15 +196,15 @@ pub fn encode<
 		let (input_writer, input_reader): (
 			PipedWriter<u8, IO_BUFFER_SIZE>,
 			PipedReader<u8, IO_BUFFER_SIZE>,
-		) = pipe::<u8, IO_BUFFER_SIZE>(0);
+		) = pipe::<u8, IO_BUFFER_SIZE>();
 		let (message_writer, message_reader): (
 			PipedWriter<PackedMessage, MESSAGE_BUFFER_SIZE>,
 			PipedReader<PackedMessage, MESSAGE_BUFFER_SIZE>,
-		) = pipe::<PackedMessage, MESSAGE_BUFFER_SIZE>(PackedMessage(0));
+		) = pipe::<PackedMessage, MESSAGE_BUFFER_SIZE>();
 		let (output_writer, output_reader): (
 			PipedWriter<u8, IO_BUFFER_SIZE>,
 			PipedReader<u8, IO_BUFFER_SIZE>,
-		) = pipe::<u8, IO_BUFFER_SIZE>(0);
+		) = pipe::<u8, IO_BUFFER_SIZE>();
 		let file_reader: ScopedJoinHandle<AnyResult<R>> =
 			scope.spawn(|| run_file_reader(reader, input_writer));
 		let primary_context_encoder: ScopedJoinHandle<AnyResult<()>> =

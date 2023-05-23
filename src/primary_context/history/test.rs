@@ -17,7 +17,7 @@
  */
 
 use crate::basic::AnyResult;
-use crate::primary_context::history::state::{StateElement, StateTable, STATE_TABLE};
+use super::state::{HistoryState, STATE_TABLE};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
@@ -313,7 +313,7 @@ impl PrimitiveStateTable {
 // -----------------------------------------------
 
 #[test]
-fn test() -> AnyResult<()> {
+fn test_and_generate_state_table() -> AnyResult<()> {
 	let mut table: PrimitiveStateTable = PrimitiveStateTable::new();
 	table.state_auto(StateInfo {
 		first: 0,
@@ -333,10 +333,10 @@ fn test() -> AnyResult<()> {
 
 	// create next states array
 	println!(
-		"pub const STATE_TABLE: StateTable<{}> = StateTable([",
+		"pub const STATE_TABLE: &[HistoryState] = &[ // length = {}",
 		states.len()
 	);
-	let mut state_table: StateTable<255> = StateTable::new();
+	let mut state_table: Vec<HistoryState> = Vec::new();
 	for (index, &state) in states.iter().enumerate() {
 		let first_count = state.current_state.first;
 		let second_count = state.current_state.second;
@@ -345,28 +345,29 @@ fn test() -> AnyResult<()> {
 		let &next_if_second = states_index.get(&state.next_if_second).unwrap();
 		let &next_if_third = states_index.get(&state.next_if_third).unwrap();
 		let &next_if_miss = states_index.get(&state.next_if_miss).unwrap();
-		state_table[index] = StateElement::new(
+		state_table.push(HistoryState::new(
 			first_count,
 			next_if_first as u8,
 			next_if_second as u8,
 			next_if_third as u8,
 			next_if_miss as u8,
-		);
+		));
 		println!(
-			"\tStateElement::new({:2}, {:3}, {:3}, {:3}, {:3}), // {:2}, {:2}, {:2}",
+			"\tHistoryState::new({:2}, {:3}, {:3}, {:3}, {:3}), // {:3}, {:2}, {:2}, {:2}",
 			first_count,
 			next_if_first,
 			next_if_second,
 			next_if_third,
 			next_if_miss,
+			index,
 			first_count,
 			second_count,
 			third_count,
 		);
 	}
-	println!("]);");
+	println!("];");
 
-	debug_assert!(STATE_TABLE == state_table);
+	debug_assert!(state_table.eq(STATE_TABLE));
 
 	Ok(())
 }
