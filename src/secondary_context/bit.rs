@@ -17,9 +17,10 @@
  */
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[repr(usize)]
 pub enum Bit {
-	Zero,
-	One,
+	Zero = 0,
+	One = 1,
 }
 
 impl From<Bit> for bool {
@@ -53,10 +54,10 @@ macro_rules! impl_from_for_bit {
             }
             impl From<$t> for Bit {
 				fn from(value: $t) -> Self {
+					debug_assert!(value == 0 || value == 1, "Unexpected value for Bit!");
 					match value {
 						0 => Bit::Zero,
-						1 => Bit::One,
-						_ => panic!("Unexpected value for Bit!"),
+						_ => Bit::One,
 					}
 				}
             }

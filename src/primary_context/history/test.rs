@@ -321,7 +321,7 @@ fn test_and_generate_state_table() -> AnyResult<()> {
 		third: 0,
 	});
 
-	table.export()?;
+	// table.export()?;
 
 	let mut states: Vec<&PrimitiveState> = table.map.values().collect();
 	states.sort_by_key(|x| x.current_state);
