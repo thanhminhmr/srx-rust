@@ -498,7 +498,7 @@ impl PrimitiveStateTable {
 fn table() -> AnyResult<PrimitiveStateTable> {
 	let mut table: PrimitiveStateTable = PrimitiveStateTable::new();
 
-	let limit_level: u64 = 128;
+	let limit_level: u64 = 64;
 
 	// table.state_auto(state(0, fraction(1, 2)));
 
