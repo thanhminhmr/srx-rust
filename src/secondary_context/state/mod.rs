@@ -21,5 +21,5 @@ mod state;
 #[cfg(test)]
 mod test;
 
-pub use self::state::BitState;
-pub use self::info::StateInfo;
+pub use state::BitState;
+pub use info::StateInfo;

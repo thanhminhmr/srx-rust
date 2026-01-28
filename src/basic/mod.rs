@@ -22,8 +22,8 @@ mod error;
 mod io;
 mod pipe;
 
-pub use self::buffer::Buffer;
-pub use self::byte::Byte;
-pub use self::error::{AnyError, AnyResult};
-pub use self::io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
-pub use self::pipe::{pipe, PipedReader, PipedWriter};
+pub use buffer::Buffer;
+pub use byte::Byte;
+pub use error::{AnyError, AnyResult};
+pub use io::{Closable, Consumer, FromProducer, Producer, Reader, ToConsumer, Writer};
+pub use pipe::{pipe, PipedReader, PipedWriter};

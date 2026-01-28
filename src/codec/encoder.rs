@@ -146,7 +146,7 @@ impl<const IO_BUFFER_SIZE: usize, const MESSAGE_BUFFER_SIZE: usize>
 		self.bit(low_context + (low >> 2), Bit::from(low >> 1 & 1))?;
 		self.bit(low_context + (low >> 1), Bit::from(low & 1))?;
 		// oke
-		return Ok(());
+		Ok(())
 	}
 
 	fn encode(mut self) -> AnyResult<()> {

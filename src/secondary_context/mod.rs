@@ -22,8 +22,8 @@ mod decoder;
 mod encoder;
 mod state;
 
-pub use self::bit::Bit;
-pub use self::context::SecondaryContext;
-pub use self::state::StateInfo;
-pub use self::decoder::BitDecoder;
-pub use self::encoder::BitEncoder;
+pub use bit::Bit;
+pub use context::SecondaryContext;
+pub use state::StateInfo;
+pub use decoder::BitDecoder;
+pub use encoder::BitEncoder;

@@ -21,5 +21,5 @@ mod state;
 #[cfg(test)]
 mod test;
 
-pub use self::history::ByteHistory;
-pub use self::state::HistoryState;
+pub use history::ByteHistory;
+pub use state::HistoryState;

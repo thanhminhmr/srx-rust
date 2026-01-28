@@ -20,5 +20,5 @@ mod decoder;
 mod encoder;
 mod shared;
 
-pub use self::decoder::decode;
-pub use self::encoder::encode;
+pub use decoder::decode;
+pub use encoder::encode;

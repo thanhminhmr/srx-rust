@@ -83,7 +83,7 @@ impl<const SIZE: usize> BitDecoder<SIZE> {
 			Bit::One => &mut self.high,
 		}) = middle + (u32::from(bit) ^ 1);
 		// return the value
-		return Ok(bit);
+		Ok(bit)
 	}
 }
 

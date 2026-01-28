@@ -71,7 +71,7 @@ impl<const SIZE: usize> BitEncoder<SIZE> {
 			self.flush()?;
 		}
 		// oke
-		return Ok(());
+		Ok(())
 	}
 }
 

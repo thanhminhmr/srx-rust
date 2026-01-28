@@ -58,7 +58,7 @@ impl<const SIZE: usize> PrimaryContext<SIZE> {
 		self.previous_byte = next_byte;
 		self.hash_value = (self.hash_value * (5 << 5) + usize::from(next_byte) + 1) % SIZE;
 		debug_assert!(self.hash_value < SIZE);
-		return matching_byte;
+		matching_byte
 	}
 
 	pub fn matched(&mut self, current_state: HistoryState, next_byte: Byte, matched: ByteMatched) {

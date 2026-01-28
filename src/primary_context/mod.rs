@@ -20,6 +20,6 @@ mod context;
 mod history;
 mod matched;
 
-pub use self::context::PrimaryContext;
-pub use self::history::{ByteHistory, HistoryState};
-pub use self::matched::ByteMatched;
+pub use context::PrimaryContext;
+pub use history::{ByteHistory, HistoryState};
+pub use matched::ByteMatched;

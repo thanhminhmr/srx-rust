@@ -55,7 +55,7 @@ impl<const IO_BUFFER_SIZE: usize> CombinedContextDecoder<IO_BUFFER_SIZE> {
 		low += low + usize::from(self.bit(low_context + low)?);
 		low += low + usize::from(self.bit(low_context + low)?);
 		low += low + usize::from(self.bit(low_context + low)?);
-		return Ok(Byte::from(((high - 16) << 4) | (low - 16)));
+		Ok(Byte::from(((high - 16) << 4) | (low - 16)))
 	}
 
 	fn decode(mut self) -> AnyResult<()> {

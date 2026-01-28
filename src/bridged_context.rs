@@ -61,21 +61,21 @@ impl BridgedContextInfo {
 	}
 
 	pub fn first_context(&self) -> usize {
-		return self.bit_context + usize::from(self.current_history.first_byte());
+		self.bit_context + usize::from(self.current_history.first_byte())
 	}
 
 	pub fn second_context(&self) -> usize {
-		return self.bit_context
+		self.bit_context
 			+ 0x100 + ((usize::from(self.current_history.second_byte())
 			+ usize::from(self.current_history.third_byte()))
-			& 0xFF);
+			& 0xFF)
 	}
 
 	pub fn third_context(&self) -> usize {
-		return self.bit_context
+		self.bit_context
 			+ 0x200 + ((usize::from(self.current_history.second_byte()) * 2)
 			.wrapping_sub(usize::from(self.current_history.third_byte()))
-			& 0xFF);
+			& 0xFF)
 	}
 
 	pub fn literal_context(&self) -> usize {
